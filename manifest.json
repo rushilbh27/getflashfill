@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "FlashFill",
+  "version": "0.1.0",
+  "description": "Zero-click burner identity and OTP automation for signup forms.",
+  "permissions": ["storage", "activeTab", "scripting", "tabs"],
+  "background": {
+    "service_worker": "src/background/worker.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "src/content/observer.ts",
+        "src/content/detector.ts",
+        "src/content/injector.ts"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "FlashFill"
+  }
+}

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>FlashFill</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 16px;
+        width: 280px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #1a1a1a;
+        color: #ffffff;
+        font-size: 14px;
+      }
+      h1 { margin: 0 0 12px 0; font-size: 18px; color: #00c853; }
+      h2 { margin: 0 0 8px 0; font-size: 14px; font-weight: 600; }
+      .section { display: none; }
+      .section.active { display: block; }
+      input[type="password"] {
+        width: 100%;
+        padding: 8px;
+        margin-bottom: 8px;
+        background: #2a2a2a;
+        border: 1px solid #3a3a3a;
+        color: #ffffff;
+        border-radius: 4px;
+      }
+      button {
+        width: 100%;
+        padding: 8px;
+        background: #00c853;
+        color: #1a1a1a;
+        border: none;
+        border-radius: 4px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover { background: #00e676; }
+      .status {
+        display: inline-block;
+        padding: 4px 8px;
+        background: #003d1a;
+        color: #00c853;
+        border-radius: 4px;
+        font-size: 12px;
+        margin-bottom: 12px;
+      }
+      ul { list-style: none; padding: 0; margin: 0 0 12px 0; }
+      li {
+        padding: 8px;
+        margin-bottom: 4px;
+        background: #2a2a2a;
+        border-radius: 4px;
+        font-size: 12px;
+      }
+      li .email { color: #00c853; font-weight: 600; display: block; }
+      li .url { color: #999; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      li .date { color: #666; font-size: 11px; }
+      .empty { color: #666; font-style: italic; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>FlashFill</h1>
+
+    <div id="setup-section" class="section">
+      <h2>Setup Required</h2>
+      <input id="api-key-input" type="password" placeholder="Paste your RapidAPI key" />
+      <button id="save-key-btn">Save Key</button>
+    </div>
+
+    <div id="active-section" class="section">
+      <span class="status">FlashFill Active</span>
+      <h2>Recent Emails</h2>
+      <ul id="history-list"></ul>
+      <button id="clear-session-btn">Clear Session</button>
+    </div>
+
+    <script type="module" src="./popup.ts"></script>
+  </body>
+</html>
