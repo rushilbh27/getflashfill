@@ -1,45 +1,45 @@
 /*
  * SERVICE WORKER — FlashFill Background Script
  *
- * Responsibilities:
- * - REQUEST_IDENTITY  → create Tempmail mailbox, build Identity, store session,
- *                       reply IDENTITY_READY to the requesting tab.
- * - FORM_SUBMITTED    → begin OTP polling (primary trigger).
- * - OTP_URL_DETECTED  → begin OTP polling if not already active (secondary trigger).
- * - Poll Tempmail inbox every 3s using a recursive setTimeout chain.
- * - chrome.alarms used for the 90-second hard-stop only (alarm name:
- *   'flashfill-otp-timeout'). Repeating alarms cannot fire every 3s in Chrome
- *   (minimum period is 1 minute), hence setTimeout for poll ticks.
- * - On OTP found: send OTP_FOUND to the content tab, stop polling.
- * - On 90s timeout: send OTP_TIMEOUT to the content tab, stop polling.
- * - Domain rotation: TODO V1.1 — auto-rotate Tempmail domains on rejection.
- *   For V1.0 we use whatever domain Tempmail assigns on mailbox creation.
+ * Tempmail API (Privatix on RapidAPI) — correct flow:
+ *   1. GET  /request/domains/                  → string[] of available domains
+ *   2. Build email: {random_local}@{domain}
+ *   3. MD5-hash the lowercase email            → this is the mailbox ID
+ *   4. GET  /request/mail/id/{md5_hash}        → TempmailMessage[] (or empty)
+ *
+ * There is NO POST "create mailbox" endpoint. The mailbox is implied by the
+ * email address; the MD5 hash is the stable key for polling.
+ *
+ * Polling strategy:
+ *   - chrome.alarms for the 90-second hard-stop (reliable across restarts).
+ *   - Recursive setTimeout for the 3-second poll ticks (chrome.alarms minimum
+ *     period is 1 minute, making it unusable for short intervals).
+ *
+ * TODO V1.1 — domain rotation: on DOMAIN_REJECTED, cycle through
+ *   getAvailableDomains() and retry with a fresh email on each domain until
+ *   all are exhausted.
  */
 
+import md5 from 'md5';
 import { generateIdentity } from '../shared/identity';
-import { getApiKey, getSession, setSession } from '../shared/storage';
+import { getApiKey, getSession, setSession, addToHistory } from '../shared/storage';
 import type { ContentToWorkerMessage, WorkerToContentMessage } from '../shared/messages';
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
-const ALARM_NAME = 'flashfill-otp-timeout';
-const POLL_INTERVAL_MS = 3_000;       // 3 seconds between polls
-const POLL_TIMEOUT_MS  = 90_000;      // 90-second hard stop (matches PRD)
-const ALARM_DELAY_MIN  = 1.5;         // 90s expressed in minutes for chrome.alarms
+const ALARM_NAME       = 'flashfill-otp-timeout';
+const POLL_INTERVAL_MS = 3_000;   // 3 seconds between inbox polls
+const POLL_TIMEOUT_MS  = 90_000;  // 90-second hard stop (PRD spec)
+const ALARM_DELAY_MIN  = 1.5;     // 90 s in minutes for chrome.alarms
 
 const API_HOST = 'tempmail.p.rapidapi.com';
 const API_BASE = `https://${API_HOST}`;
 
-// ─── API shape types ──────────────────────────────────────────────────────────
-
-interface TempmailMailboxResponse {
-  email: string;
-  token: string;
-}
+// ─── API types ────────────────────────────────────────────────────────────────
 
 interface TempmailMessage {
   subject: string;
-  body: string;
+  body:    string;
 }
 
 class ApiError extends Error {
@@ -52,36 +52,28 @@ class ApiError extends Error {
 // ─── polling state ────────────────────────────────────────────────────────────
 
 interface PollingState {
-  mailId: string;
-  token:  string;
-  tabId:  number;
-  startedAt: number;
+  emailHash:  string;
+  tabId:      number;
+  startedAt:  number;
   tickHandle: ReturnType<typeof setTimeout> | null;
 }
 
 let pollingState: PollingState | null = null;
 
-// Stores the mailId produced during mailbox creation so FORM_SUBMITTED can
-// start polling without needing to re-create the mailbox.
-let lastMailId = '';
-
-// ─── messaging helpers ────────────────────────────────────────────────────────
+// ─── messaging ────────────────────────────────────────────────────────────────
 
 async function sendToTab(tabId: number, message: WorkerToContentMessage): Promise<void> {
   try {
     await chrome.tabs.sendMessage(tabId, message);
   } catch {
-    // Tab may have closed or navigated away — fail silently.
+    // Tab closed or navigated — silent failure.
   }
 }
 
 // ─── OTP extraction ───────────────────────────────────────────────────────────
 
-/**
- * Search a string for the most common OTP lengths.
- * Tries 6-digit first (most common), then 4-digit, then 8-digit.
- */
 function extractOTP(text: string): string | null {
+  // Try most-common length first (6), then 4, then 8.
   const patterns: RegExp[] = [/\b(\d{6})\b/, /\b(\d{4})\b/, /\b(\d{8})\b/];
   for (const pattern of patterns) {
     const match = pattern.exec(text);
@@ -100,51 +92,51 @@ function findOTPInMessages(messages: TempmailMessage[]): string | null {
 
 // ─── Tempmail API ─────────────────────────────────────────────────────────────
 
-function rapidApiHeaders(apiKey: string, token?: string): Record<string, string> {
-  const headers: Record<string, string> = {
+function apiHeaders(apiKey: string): Record<string, string> {
+  return {
     'x-rapidapi-key':  apiKey,
     'x-rapidapi-host': API_HOST,
   };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  return headers;
 }
 
-async function createMailbox(
-  mailId: string,
-  apiKey: string,
-): Promise<TempmailMailboxResponse> {
-  const res = await fetch(
-    `${API_BASE}/request/mail/id/${encodeURIComponent(mailId)}`,
-    {
-      method:  'POST',
-      headers: rapidApiHeaders(apiKey),
-    },
-  );
-
-  if (!res.ok) {
-    throw new ApiError(res.status, `Tempmail create-mailbox failed: ${res.status}`);
-  }
-
-  return res.json() as Promise<TempmailMailboxResponse>;
+async function getAvailableDomains(apiKey: string): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/request/domains/`, {
+    method:  'GET',
+    headers: apiHeaders(apiKey),
+  });
+  if (res.status === 429) throw new ApiError(429, 'Rate limit');
+  if (!res.ok)            throw new ApiError(res.status, `Domains fetch failed: ${res.status}`);
+  return res.json() as Promise<string[]>;
 }
 
 async function fetchMessages(
-  mailId: string,
-  token:  string,
-  apiKey: string,
+  emailHash: string,
+  apiKey:    string,
 ): Promise<TempmailMessage[]> {
   const res = await fetch(
-    `${API_BASE}/request/mail/id/${encodeURIComponent(mailId)}`,
-    {
-      method:  'GET',
-      headers: rapidApiHeaders(apiKey, token),
-    },
+    `${API_BASE}/request/mail/id/${encodeURIComponent(emailHash)}`,
+    { method: 'GET', headers: apiHeaders(apiKey) },
   );
+  if (res.status === 429) throw new ApiError(429, 'Rate limit');
+  if (!res.ok)            throw new ApiError(res.status, `Poll failed: ${res.status}`);
 
-  if (res.status === 429) throw new ApiError(429, 'Tempmail rate limit exceeded');
-  if (!res.ok)           throw new ApiError(res.status, `Tempmail poll failed: ${res.status}`);
+  // API returns an object with a "mail" array, or an empty array, depending
+  // on whether any messages have arrived yet.
+  const data: unknown = await res.json();
+  if (Array.isArray(data)) return data as TempmailMessage[];
+  // Some API versions wrap messages in { mail: [...] }
+  if (data && typeof data === 'object' && 'mail' in data) {
+    return (data as { mail: TempmailMessage[] }).mail ?? [];
+  }
+  return [];
+}
 
-  return res.json() as Promise<TempmailMessage[]>;
+/**
+ * Generate a random alphanumeric local part that looks plausibly like a real
+ * username without pulling in Faker (keeping the worker lean).
+ */
+function randomLocalPart(): string {
+  return Math.random().toString(36).slice(2, 12); // e.g. "k3h9x2m7p1"
 }
 
 // ─── polling loop ─────────────────────────────────────────────────────────────
@@ -152,15 +144,14 @@ async function fetchMessages(
 function stopPolling(): void {
   if (!pollingState) return;
   if (pollingState.tickHandle !== null) clearTimeout(pollingState.tickHandle);
-  chrome.alarms.clear(ALARM_NAME);
+  void chrome.alarms.clear(ALARM_NAME);
   pollingState = null;
 }
 
 async function pollOnce(): Promise<void> {
   if (!pollingState) return;
 
-  // Belt-and-suspenders: if somehow the alarm hasn't fired yet but we're past
-  // the window, stop ourselves.
+  // Belt-and-suspenders timeout guard.
   if (Date.now() - pollingState.startedAt >= POLL_TIMEOUT_MS) {
     const tabId = pollingState.tabId;
     stopPolling();
@@ -168,17 +159,13 @@ async function pollOnce(): Promise<void> {
     return;
   }
 
-  const apiKey = await getApiKey();  // re-read each tick (user could revoke key)
+  const apiKey = await getApiKey();
   if (!apiKey || !pollingState) return;
 
   try {
-    const messages = await fetchMessages(
-      pollingState.mailId,
-      pollingState.token,
-      apiKey,
-    );
-
+    const messages = await fetchMessages(pollingState.emailHash, apiKey);
     const otp = findOTPInMessages(messages);
+
     if (otp) {
       const tabId = pollingState.tabId;
       stopPolling();
@@ -188,84 +175,82 @@ async function pollOnce(): Promise<void> {
   } catch (err) {
     if (err instanceof ApiError) {
       if (err.status === 429) {
-        // Rate-limited — abort immediately, don't timeout spam.
         const tabId = pollingState.tabId;
         stopPolling();
         await sendToTab(tabId, { type: 'OTP_TIMEOUT' });
         return;
       }
       if (err.status === 401 || err.status === 403) {
-        console.error('[FlashFill] API key invalid or expired');
+        console.error('[FlashFill] API key invalid during poll — stopping.');
         stopPolling();
         return;
       }
     }
-    // Non-fatal — log and keep polling until timeout.
     console.error('[FlashFill] Poll error (will retry):', err);
   }
 
-  // No OTP yet — schedule next tick. Touch storage to help keep worker alive.
+  // No OTP yet — touch storage to help keep the worker alive, then reschedule.
   if (pollingState) {
-    await getApiKey(); // lightweight storage touch = signals activity to Chrome
+    await getApiKey();
     pollingState.tickHandle = setTimeout(() => { void pollOnce(); }, POLL_INTERVAL_MS);
   }
 }
 
-export function startOTPPolling(email: string, token: string, tabId: number): void {
+export function startOTPPolling(emailHash: string, tabId: number): void {
   if (pollingState) return; // one loop at a time
 
-  // Derive mailId from the email local part (Tempmail uses the mailId we sent
-  // as the local part, so this is a safe reverse operation).
-  const mailId = email.split('@')[0] ?? lastMailId;
-
   pollingState = {
-    mailId,
-    token,
+    emailHash,
     tabId,
     startedAt:  Date.now(),
     tickHandle: null,
   };
 
-  // 90-second hard stop via alarm — survives worker restarts.
   chrome.alarms.create(ALARM_NAME, { delayInMinutes: ALARM_DELAY_MIN });
-
-  // First poll fires immediately.
   void pollOnce();
 }
 
-// ─── REQUEST_IDENTITY handler ─────────────────────────────────────────────────
+// ─── REQUEST_IDENTITY ─────────────────────────────────────────────────────────
 
-async function handleRequestIdentity(
-  url:   string,
-  tabId: number,
-): Promise<void> {
+async function handleRequestIdentity(url: string, tabId: number): Promise<void> {
   const apiKey = await getApiKey();
-  if (!apiKey) return; // User hasn't entered their RapidAPI key yet.
+  if (!apiKey) return;
 
-  // Quota protection: reuse the existing session if the URL matches.
+  // Quota protection — reuse session if the URL hasn't changed.
   const existing = await getSession();
   if (existing && existing.associatedUrl === url) {
     const identity = generateIdentity(existing.email);
+    // token field stores the emailHash in this implementation.
     await sendToTab(tabId, { type: 'IDENTITY_READY', payload: { identity } });
     return;
   }
 
   try {
-    // Use a clean alphanumeric mailId (UUID without hyphens, 16 chars).
-    const mailId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
-    lastMailId = mailId;
+    const domains = await getAvailableDomains(apiKey);
+    if (!domains.length) throw new Error('No domains returned from Tempmail');
 
-    const mailbox = await createMailbox(mailId, apiKey);
-    const identity = generateIdentity(mailbox.email);
+    const domain    = domains[Math.floor(Math.random() * domains.length)]!;
+    const local     = randomLocalPart();
+    const email     = `${local}@${domain}`.toLowerCase();
+    const emailHash = md5(email);
+
+    const identity = generateIdentity(email);
 
     await setSession({
-      email:         mailbox.email,
-      token:         mailbox.token,
+      email,
+      token:         emailHash, // repurposing token field to store the hash
       createdAt:     Date.now(),
       associatedUrl: url,
     });
 
+    await addToHistory({
+      email,
+      url,
+      date: new Date().toISOString(),
+    });
+
     await sendToTab(tabId, { type: 'IDENTITY_READY', payload: { identity } });
+
   } catch (err) {
     if (err instanceof ApiError) {
       if (err.status === 401 || err.status === 403) {
@@ -273,32 +258,30 @@ async function handleRequestIdentity(
       } else if (err.status === 429) {
         console.error('[FlashFill] API quota exhausted.');
       } else {
-        console.error('[FlashFill] Mailbox creation failed:', err.message);
+        console.error('[FlashFill] Mailbox setup failed:', err.message);
       }
     } else {
-      console.error('[FlashFill] Unexpected error creating mailbox:', err);
+      console.error('[FlashFill] Unexpected error:', err);
     }
-    // Do nothing else — injector will receive no IDENTITY_READY and form stays unfilled.
   }
 }
 
-// ─── FORM_SUBMITTED / OTP_URL_DETECTED handler ────────────────────────────────
+// ─── FORM_SUBMITTED / OTP_URL_DETECTED ───────────────────────────────────────
 
 async function handleStartPolling(tabId: number): Promise<void> {
-  if (pollingState) return; // already polling
+  if (pollingState) return;
 
   const session = await getSession();
   if (!session) return;
 
-  startOTPPolling(session.email, session.token, tabId);
+  // session.token holds the MD5 email hash (set in handleRequestIdentity).
+  startOTPPolling(session.token, tabId);
 }
 
-// ─── chrome.alarms: 90-second hard stop ──────────────────────────────────────
+// ─── chrome.alarms hard-stop ──────────────────────────────────────────────────
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name !== ALARM_NAME) return;
-  if (!pollingState) return;
-
+  if (alarm.name !== ALARM_NAME || !pollingState) return;
   const tabId = pollingState.tabId;
   stopPolling();
   await sendToTab(tabId, { type: 'OTP_TIMEOUT' });
@@ -307,10 +290,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // ─── message router ───────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener(
-  (
-    message: ContentToWorkerMessage,
-    sender:  chrome.runtime.MessageSender,
-  ) => {
+  (message: ContentToWorkerMessage, sender: chrome.runtime.MessageSender) => {
     const tabId = sender.tab?.id;
     if (tabId === undefined) return;
 
@@ -318,11 +298,7 @@ chrome.runtime.onMessage.addListener(
       case 'REQUEST_IDENTITY':
         void handleRequestIdentity(message.payload.url, tabId);
         break;
-
       case 'FORM_SUBMITTED':
-        void handleStartPolling(tabId);
-        break;
-
       case 'OTP_URL_DETECTED':
         void handleStartPolling(tabId);
         break;
