@@ -25,20 +25,22 @@ async function renderHistory(): Promise<void> {
   list.innerHTML = '';
 
   if (history.length === 0) {
-    const empty = document.createElement('li');
-    empty.className = 'empty';
-    empty.textContent = 'No emails used yet.';
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No emails generated yet.';
     list.appendChild(empty);
     return;
   }
 
-  for (const entry of history) {
+  // Show only last 5 entries for brevity in popup
+  for (const entry of history.slice(-5).reverse()) {
     list.appendChild(renderEntry(entry));
   }
 }
 
-function renderEntry(entry: HistoryEntry): HTMLLIElement {
+function renderEntry(entry: HistoryEntry): HTMLElement {
   const li = document.createElement('li');
+  li.className = 'history-item';
 
   const email = document.createElement('span');
   email.className = 'email';
@@ -46,15 +48,43 @@ function renderEntry(entry: HistoryEntry): HTMLLIElement {
 
   const url = document.createElement('span');
   url.className = 'url';
-  url.textContent = entry.url;
+  url.textContent = entry.url.replace(/^https?:\/\//, '');
+
+  const footer = document.createElement('div');
+  footer.className = 'footer';
 
   const date = document.createElement('span');
   date.className = 'date';
-  date.textContent = new Date(entry.date).toLocaleString();
+  date.textContent = new Date(entry.date).toLocaleDateString(undefined, { 
+    month: 'short', 
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
 
+  footer.appendChild(date);
+  
   li.appendChild(email);
   li.appendChild(url);
-  li.appendChild(date);
+  li.appendChild(footer);
+
+  // Click to copy email
+  li.title = 'Click to copy email';
+  li.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(entry.email);
+      const originalText = email.textContent;
+      email.textContent = 'Copied!';
+      email.style.color = '#30d158';
+      setTimeout(() => {
+        email.textContent = originalText;
+        email.style.color = '';
+      }, 1000);
+    } catch (e) {
+      console.error('Failed to copy', e);
+    }
+  });
+
   return li;
 }
 

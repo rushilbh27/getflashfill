@@ -233,25 +233,59 @@ async function handleIdentityReady(identity: Identity): Promise<void> {
 
 // ---- OTP ----
 
-export function findOTPField(): HTMLInputElement | null {
-  const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input'));
+/**
+ * Locates the OTP input field. Supports:
+ * 1. Single input (maxlength=6, placeholder="Code", etc.)
+ * 2. Segmented inputs (a sequence of 4-8 single-digit inputs)
+ */
+export function findOTPFields(): HTMLInputElement[] {
+  const allInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input'));
 
-  for (const input of inputs) {
+  // Strategy A: Look for a sequence of single-character inputs.
+  const inputGroups: HTMLInputElement[][] = [];
+  let currentGroup: HTMLInputElement[] = [];
+
+  for (const input of allInputs) {
     const type = normaliseAttr(input.getAttribute('type'));
-    // Accept empty (defaults to text), text, number, tel.
+    const isTextLike = ['', 'text', 'number', 'tel'].includes(type);
+    const isSingleChar =
+      input.getAttribute('maxlength') === '1' ||
+      (input.offsetWidth > 0 && input.offsetWidth < 60 && input.offsetHeight > 0);
+
+    if (isTextLike && isSingleChar && input.offsetParent !== null) {
+      currentGroup.push(input);
+    } else {
+      if (currentGroup.length >= 4 && currentGroup.length <= 8) {
+        inputGroups.push(currentGroup);
+      }
+      currentGroup = [];
+    }
+  }
+  if (currentGroup.length >= 4 && currentGroup.length <= 8) {
+    inputGroups.push(currentGroup);
+  }
+
+  // If we found a group of 4-8 small inputs, it's likely a segmented OTP.
+  if (inputGroups.length > 0) {
+    // Pick the group that is most "centered" or just the first one found.
+    return inputGroups[0]!;
+  }
+
+  // Strategy B: Look for a single obvious OTP input.
+  for (const input of allInputs) {
+    const type = normaliseAttr(input.getAttribute('type'));
     if (!['', 'text', 'number', 'tel'].includes(type)) continue;
 
     const maxlength = input.getAttribute('maxlength');
     const maxlengthMatch = maxlength === '4' || maxlength === '6' || maxlength === '8';
-
     const keywordMatch = includesAny(attrHaystack(input), OTP_FIELD_KEYWORDS);
 
     if (maxlengthMatch || keywordMatch) {
-      return input;
+      return [input];
     }
   }
 
-  return null;
+  return [];
 }
 
 function findVerifyButton(scope: ParentNode): HTMLElement | null {
@@ -273,26 +307,35 @@ function findVerifyButton(scope: ParentNode): HTMLElement | null {
   return null;
 }
 
-async function waitForOTPField(): Promise<HTMLInputElement | null> {
+async function waitForOTPFields(): Promise<HTMLInputElement[]> {
   const deadline = Date.now() + OTP_RETRY_WINDOW_MS;
   while (Date.now() < deadline) {
-    const field = findOTPField();
-    if (field) return field;
+    const fields = findOTPFields();
+    if (fields.length > 0) return fields;
     await wait(OTP_RETRY_INTERVAL_MS);
   }
-  return null;
+  return [];
 }
 
 async function handleOTPFound(code: string): Promise<void> {
-  const field = await waitForOTPField();
-  if (!field) {
+  const fields = await waitForOTPFields();
+  if (fields.length === 0) {
     showToast('OTP received but no input field found');
     return;
   }
 
-  await ghostFillSingle(field, code);
+  if (fields.length === 1) {
+    // Standard single field.
+    await ghostFillSingle(fields[0]!, code);
+  } else {
+    // Segmented fields.
+    for (let i = 0; i < fields.length && i < code.length; i++) {
+      await ghostFillSingle(fields[i]!, code[i]!);
+    }
+  }
 
-  const form = field.closest('form');
+  const primaryField = fields[0]!;
+  const form = primaryField.closest('form');
   const button = findVerifyButton(form ?? document);
   button?.click();
 
@@ -330,36 +373,49 @@ export function showToast(message: string, duration: number = TOAST_DEFAULT_MS):
 
   const container = ensureToastContainer();
   const toast = document.createElement('div');
-  toast.textContent = message;
+  
+  // Premium, state-of-the-art glassmorphism design
   Object.assign(toast.style, {
-    background: '#1a1a1a',
+    background: 'rgba(18, 18, 18, 0.8)',
+    backdropFilter: 'blur(12px) saturate(180%)',
+    WebkitBackdropFilter: 'blur(12px) saturate(180%)',
     color: '#ffffff',
-    borderLeft: '4px solid #00c853',
-    padding: '10px 14px',
-    borderRadius: '4px',
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-    fontSize: '13px',
-    lineHeight: '1.4',
-    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.35)',
+    padding: '12px 18px',
+    borderRadius: '12px',
+    fontFamily: '"Outfit", "Inter", -apple-system, sans-serif',
+    fontSize: '14px',
+    fontWeight: '500',
+    lineHeight: '1.5',
+    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.1)',
     opacity: '0',
-    transform: 'translateX(16px)',
-    transition: `opacity ${TOAST_ANIMATE_MS}ms ease, transform ${TOAST_ANIMATE_MS}ms ease`,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    transform: 'translateY(-10px) scale(0.95)',
+    transition: `all ${TOAST_ANIMATE_MS}ms cubic-bezier(0.23, 1, 0.32, 1)`,
     pointerEvents: 'auto',
-    maxWidth: '280px',
+    maxWidth: '320px',
     wordBreak: 'break-word',
+    borderLeft: '4px solid #3d5afe', // Vibrant Indigo accent
   } satisfies Partial<CSSStyleDeclaration>);
+
+  // Content with icon-like hint
+  toast.innerHTML = `
+    <div style="flex-shrink:0; width:8px; height:8px; background:#3d5afe; border-radius:50%; box-shadow:0 0 8px #3d5afe"></div>
+    <span>${message}</span>
+  `;
 
   container.appendChild(toast);
 
   // Next frame: trigger the enter transition.
   requestAnimationFrame(() => {
     toast.style.opacity = '1';
-    toast.style.transform = 'translateX(0)';
+    toast.style.transform = 'translateY(0) scale(1)';
   });
 
   window.setTimeout(() => {
     toast.style.opacity = '0';
-    toast.style.transform = 'translateX(16px)';
+    toast.style.transform = 'translateY(-10px) scale(0.95)';
     window.setTimeout(() => {
       toast.remove();
     }, TOAST_ANIMATE_MS + 50);
