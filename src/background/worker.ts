@@ -22,7 +22,7 @@
 
 import md5 from 'md5';
 import { generateIdentity } from '../shared/identity';
-import { extractOTP } from '../shared/otp-extractor';
+import { extractOTP, extractLink } from '../shared/otp-extractor';
 import { getApiKey, getSession, setSession, addToHistory } from '../shared/storage';
 import type { ContentToWorkerMessage, WorkerToContentMessage } from '../shared/messages';
 
@@ -81,6 +81,14 @@ function findOTPInMessages(messages: TempmailMessage[]): string | null {
   for (const msg of messages) {
     const otp = extractOTP(msg.subject) ?? extractOTP(msg.body);
     if (otp) return otp;
+  }
+  return null;
+}
+
+function findLinkInMessages(messages: TempmailMessage[]): string | null {
+  for (const msg of messages) {
+    const link = extractLink(msg.body);
+    if (link) return link;
   }
   return null;
 }
@@ -166,6 +174,17 @@ async function pollOnce(): Promise<void> {
       const tabId = pollingState.tabId;
       stopPolling();
       await sendToTab(tabId, { type: 'OTP_FOUND', payload: { code: otp } });
+      return;
+    }
+
+    const link = findLinkInMessages(messages);
+    if (link) {
+      const tabId = pollingState.tabId;
+      stopPolling();
+      // Auto-open magic link in a new foreground tab.
+      await chrome.tabs.create({ url: link, active: true });
+      // Notify the original tab.
+      await sendToTab(tabId, { type: 'OTP_FOUND', payload: { code: 'Magic Link' } });
       return;
     }
   } catch (err) {

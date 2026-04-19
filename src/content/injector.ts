@@ -318,6 +318,12 @@ async function waitForOTPFields(): Promise<HTMLInputElement[]> {
 }
 
 async function handleOTPFound(code: string): Promise<void> {
+  // If it's a magic link, the worker already opened it. Just notify.
+  if (code === 'Magic Link') {
+    showToast('Magic link detected & opened!');
+    return;
+  }
+
   const fields = await waitForOTPFields();
   if (fields.length === 0) {
     showToast('OTP received but no input field found');
