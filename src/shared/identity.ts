@@ -1,5 +1,5 @@
 import type { Identity } from './types';
-import { faker } from '@faker-js/faker';
+import { faker } from '@faker-js/faker/locale/en';
 
 export function generateIdentity(email: string): Identity {
   return {
