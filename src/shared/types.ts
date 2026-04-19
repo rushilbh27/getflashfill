@@ -2,7 +2,9 @@ export interface Identity {
   email: string;
   firstName: string;
   lastName: string;
+  fullName: string;
   username: string;
+  password: string;
 }
 
 export interface SessionData {

@@ -13,7 +13,13 @@
  */
 
 const EMAIL_KEYWORDS = ['email', 'mail', 'user_email', 'e-mail'] as const;
-const SIGNUP_KEYWORDS = ['signup', 'sign-up', 'register', 'join'] as const;
+const SIGNUP_KEYWORDS = [
+  'signup', 'sign-up', 'sign up',
+  'register', 'registration',
+  'join',
+  'create account', 'create an account', 'create your account',
+  'get started',
+] as const;
 const BLOCKLIST_KEYWORDS = ['search', 'contact', 'newsletter'] as const;
 
 const EMAIL_FIELD_FOUND_EVENT = 'flashfill:emailFieldFound';
@@ -65,25 +71,86 @@ function looksLikeEmailInput(input: HTMLInputElement): boolean {
   return containsAny(haystack, EMAIL_KEYWORDS);
 }
 
-function parentFormQualifies(form: HTMLFormElement): boolean {
-  const haystack = formHaystack(form);
+/**
+ * Gather text from nearby headings and prominent text to detect signup context
+ * even when the form element itself has no identifying attributes.
+ */
+function nearbyTextSignals(scope: Element): string {
+  // Check headings (h1-h3) and prominent ARIA labels near the form.
+  const headings = scope.querySelectorAll('h1, h2, h3, [role="heading"]');
+  const parts: string[] = [];
+  headings.forEach((h) => parts.push(normalise(h.textContent)));
+
+  // Also check page-level headings if scope is a small form.
+  if (scope !== document.documentElement) {
+    document.querySelectorAll('h1, h2').forEach((h) =>
+      parts.push(normalise(h.textContent)),
+    );
+  }
+  return parts.join(' ');
+}
+
+/**
+ * Check if a container has sibling name-like inputs alongside the email field,
+ * which strongly suggests a signup form (not login).
+ */
+function hasNameFields(container: Element): boolean {
+  const nameKeywords = ['first', 'fname', 'given', 'last', 'lname', 'surname', 'full_name', 'fullname'];
+  const inputs = container.querySelectorAll<HTMLInputElement>('input');
+  for (const input of Array.from(inputs)) {
+    const type = normalise(input.getAttribute('type'));
+    if (['password', 'checkbox', 'radio', 'hidden', 'submit', 'button', 'file'].includes(type)) continue;
+    const hay = [
+      input.getAttribute('name'),
+      input.getAttribute('id'),
+      input.getAttribute('placeholder'),
+      input.getAttribute('aria-label'),
+    ].map(normalise).join(' ');
+    if (nameKeywords.some((kw) => hay.includes(kw))) return true;
+  }
+  return false;
+}
+
+function containerQualifies(container: Element): boolean {
+  const haystack = container instanceof HTMLFormElement
+    ? formHaystack(container)
+    : normalise(container.getAttribute('class')) + ' ' + normalise(container.getAttribute('id'));
 
   // Blocklist short-circuits — a form named "search" is never a signup form.
   if (containsAny(haystack, BLOCKLIST_KEYWORDS)) return false;
 
-  // Signal 1 — the form contains a password input.
-  const hasPassword = form.querySelector('input[type="password"]') !== null;
-  if (hasPassword) return true;
+  // Signal 1 — the container has a password input.
+  if (container.querySelector('input[type="password"]')) return true;
 
-  // Signal 2 — the form's own identity hints at signup / register / join.
+  // Signal 2 — the container's own attributes hint at signup.
   if (containsAny(haystack, SIGNUP_KEYWORDS)) return true;
+
+  // Signal 3 — nearby headings / page text indicate signup context.
+  const headingText = nearbyTextSignals(container);
+  if (containsAny(headingText, SIGNUP_KEYWORDS)) return true;
+
+  // Signal 4 — container has name fields alongside the email field,
+  // strongly suggesting a registration form (login forms don't ask for names).
+  if (hasNameFields(container)) return true;
+
+  // Signal 5 — button text in the container hints at signup.
+  const buttons = container.querySelectorAll('button, input[type="submit"], [role="button"]');
+  const btnText = Array.from(buttons).map((b) => normalise(b.textContent)).join(' ');
+  const buttonSignals = ['sign up', 'signup', 'register', 'create', 'join', 'get started', 'next'] as const;
+  if (containsAny(btnText, buttonSignals)) return true;
 
   return false;
 }
 
 /**
- * Scan the DOM for the first email input inside a form that looks like a
- * signup / registration form. Returns `null` when no eligible field exists.
+ * Scan the DOM for the first email input inside a form (or form-like container)
+ * that looks like a signup / registration form.
+ * Returns `null` when no eligible field exists.
+ *
+ * Handles:
+ *  - Traditional <form> elements
+ *  - React / SPA apps that don't use <form> tags (falls back to the closest
+ *    section, [role="form"], or parent container)
  */
 export function detectEmailField(): HTMLInputElement | null {
   const inputs = document.querySelectorAll<HTMLInputElement>('input');
@@ -91,12 +158,18 @@ export function detectEmailField(): HTMLInputElement | null {
   for (const input of Array.from(inputs)) {
     if (!looksLikeEmailInput(input)) continue;
 
+    // Try a real <form> first.
     const form = input.closest('form');
-    if (!form) continue;
+    if (form && containerQualifies(form)) return input;
 
-    if (!parentFormQualifies(form)) continue;
+    // Fallback: check logical containers for SPA / formless layouts.
+    const container = input.closest<Element>(
+      '[role="form"], section, [data-testid], main, .card, .modal, [class*="form"], [class*="signup"], [class*="register"]',
+    );
+    if (container && containerQualifies(container)) return input;
 
-    return input;
+    // Last resort: check the page-level context (headings on the page).
+    if (form && containerQualifies(document.documentElement)) return input;
   }
 
   return null;

@@ -32,7 +32,7 @@ const POLL_INTERVAL_MS = 3_000;   // 3 seconds between inbox polls
 const POLL_TIMEOUT_MS  = 90_000;  // 90-second hard stop (PRD spec)
 const ALARM_DELAY_MIN  = 1.5;     // 90 s in minutes for chrome.alarms
 
-const API_HOST = 'tempmail.p.rapidapi.com';
+const API_HOST = 'privatix-temp-mail-v1.p.rapidapi.com';
 const API_BASE = `https://${API_HOST}`;
 
 // ─── API types ────────────────────────────────────────────────────────────────
@@ -59,6 +59,10 @@ interface PollingState {
 }
 
 let pollingState: PollingState | null = null;
+
+// Guard against concurrent handleRequestIdentity calls (detector + injector
+// can both fire REQUEST_IDENTITY before the first call finishes saving).
+let identityInFlight = false;
 
 // ─── messaging ────────────────────────────────────────────────────────────────
 
@@ -94,6 +98,7 @@ function findOTPInMessages(messages: TempmailMessage[]): string | null {
 
 function apiHeaders(apiKey: string): Record<string, string> {
   return {
+    'Content-Type':    'application/json',
     'x-rapidapi-key':  apiKey,
     'x-rapidapi-host': API_HOST,
   };
@@ -213,28 +218,41 @@ export function startOTPPolling(emailHash: string, tabId: number): void {
 // ─── REQUEST_IDENTITY ─────────────────────────────────────────────────────────
 
 async function handleRequestIdentity(url: string, tabId: number): Promise<void> {
+  console.log('[FlashFill] handleRequestIdentity called', { url, tabId });
+  if (identityInFlight) {
+    console.log('[FlashFill] Identity request already in-flight, skipping.');
+    return;
+  }
   const apiKey = await getApiKey();
-  if (!apiKey) return;
+  if (!apiKey) {
+    console.warn('[FlashFill] No API key stored — skipping.');
+    return;
+  }
 
   // Quota protection — reuse session if the URL hasn't changed.
   const existing = await getSession();
   if (existing && existing.associatedUrl === url) {
+    console.log('[FlashFill] Reusing existing session for', url);
     const identity = generateIdentity(existing.email);
-    // token field stores the emailHash in this implementation.
     await sendToTab(tabId, { type: 'IDENTITY_READY', payload: { identity } });
     return;
   }
 
+  identityInFlight = true;
   try {
     const domains = await getAvailableDomains(apiKey);
     if (!domains.length) throw new Error('No domains returned from Tempmail');
 
-    const domain    = domains[Math.floor(Math.random() * domains.length)]!;
+    // API returns domains with leading '@' (e.g. '@cpav3.com') — strip it.
+    const rawDomain = domains[Math.floor(Math.random() * domains.length)]!;
+    const domain    = rawDomain.replace(/^@/, '');
     const local     = randomLocalPart();
     const email     = `${local}@${domain}`.toLowerCase();
     const emailHash = md5(email);
 
+    console.log('[FlashFill] Generated email:', email);
     const identity = generateIdentity(email);
+    console.log('[FlashFill] Identity ready, sending to tab', tabId, identity);
 
     await setSession({
       email,
@@ -263,6 +281,8 @@ async function handleRequestIdentity(url: string, tabId: number): Promise<void> 
     } else {
       console.error('[FlashFill] Unexpected error:', err);
     }
+  } finally {
+    identityInFlight = false;
   }
 }
 
@@ -292,6 +312,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 chrome.runtime.onMessage.addListener(
   (message: ContentToWorkerMessage, sender: chrome.runtime.MessageSender) => {
     const tabId = sender.tab?.id;
+    console.log('[FlashFill] Worker received message:', message.type, 'from tab', tabId);
     if (tabId === undefined) return;
 
     switch (message.type) {

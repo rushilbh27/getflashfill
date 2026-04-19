@@ -30,10 +30,11 @@ const OTP_FIELD_KEYWORDS = ['otp', 'code', 'verify', 'verification'] as const;
 const VERIFY_BUTTON_KEYWORDS = ['verify', 'submit', 'confirm', 'continue'] as const;
 const FIRST_NAME_KEYWORDS = ['first', 'fname', 'given'] as const;
 const LAST_NAME_KEYWORDS = ['last', 'lname', 'surname'] as const;
-const USERNAME_KEYWORDS = ['username', 'user_name'] as const;
+const NAME_KEYWORDS = ['name', 'full_name', 'fullname', 'your name', 'display'] as const;
+const USERNAME_KEYWORDS = ['username', 'user_name', 'user-name'] as const;
+const PASSWORD_KEYWORDS = ['password', 'passwd', 'pass'] as const;
 
 const NON_TEXT_INPUT_TYPES = [
-  'password',
   'checkbox',
   'radio',
   'hidden',
@@ -143,10 +144,13 @@ export async function ghostFillForm(
 
   await ghostFillSingle(field, identity.email);
 
-  const form = field.closest('form');
-  if (!form) return;
+  // Look in the parent form, or fall back to a logical container for SPAs.
+  const container: Element | null =
+    field.closest('form') ??
+    field.closest<Element>('[role="form"], section, [data-testid], main, .card, .modal, [class*="form"]');
+  if (!container) return;
 
-  const siblings = Array.from(form.querySelectorAll<HTMLInputElement>('input')).filter(
+  const siblings = Array.from(container.querySelectorAll<HTMLInputElement>('input')).filter(
     (el) => el !== field,
   );
 
@@ -157,12 +161,18 @@ export async function ghostFillForm(
 
     const hay = attrHaystack(el);
 
-    if (includesAny(hay, FIRST_NAME_KEYWORDS)) {
+    if (type === 'password' || includesAny(hay, PASSWORD_KEYWORDS)) {
+      // Always fill password fields with the generated password.
+      await ghostFillSingle(el, identity.password);
+    } else if (includesAny(hay, FIRST_NAME_KEYWORDS)) {
       await ghostFillSingle(el, identity.firstName);
     } else if (includesAny(hay, LAST_NAME_KEYWORDS)) {
       await ghostFillSingle(el, identity.lastName);
     } else if (includesAny(hay, USERNAME_KEYWORDS)) {
       await ghostFillSingle(el, identity.username);
+    } else if (includesAny(hay, NAME_KEYWORDS)) {
+      // Generic "name" field — use full name.
+      await ghostFillSingle(el, identity.fullName);
     }
   }
 }
@@ -196,6 +206,7 @@ function requestIdentityForField(field: HTMLInputElement): void {
   if (identityRequestedFor === field) return;
   identityRequestedFor = field;
   currentEmailField = field;
+  console.log('[FlashFill] Requesting identity for field:', field);
   sendToWorker({ type: 'REQUEST_IDENTITY', payload: { url: location.href } });
 }
 
@@ -206,10 +217,15 @@ function handleEmailFieldFound(event: Event): void {
 }
 
 async function handleIdentityReady(identity: Identity): Promise<void> {
+  console.log('[FlashFill] IDENTITY_READY received:', identity);
   const field = currentEmailField;
-  if (!field || !document.body.contains(field)) return;
+  if (!field || !document.body.contains(field)) {
+    console.warn('[FlashFill] Email field gone from DOM, cannot fill.');
+    return;
+  }
 
   await ghostFillForm(field, identity);
+  console.log('[FlashFill] Ghost-fill complete.');
 
   const form = field.closest('form');
   if (form) attachSubmitListener(form, identity.email);
@@ -360,6 +376,7 @@ document.addEventListener(EMAIL_FIELD_FOUND_EVENT, handleEmailFieldFound);
 // depend on catching an event that may have already fired.
 setTimeout(() => {
   const field = detectEmailField();
+  console.log('[FlashFill] Startup self-check — detected field:', field);
   if (field && !field.value.trim()) {
     requestIdentityForField(field);
   }
