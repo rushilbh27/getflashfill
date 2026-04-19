@@ -41,6 +41,7 @@ async function renderHistory(): Promise<void> {
 function renderEntry(entry: HistoryEntry): HTMLElement {
   const li = document.createElement('li');
   li.className = 'history-item';
+  if (entry.verificationLink) li.style.borderColor = 'var(--accent)';
 
   const email = document.createElement('span');
   email.className = 'email';
@@ -62,20 +63,48 @@ function renderEntry(entry: HistoryEntry): HTMLElement {
     minute: '2-digit'
   });
 
+  const otpBadge = document.createElement('span');
+  if (entry.otp) {
+    otpBadge.textContent = entry.otp;
+    Object.assign(otpBadge.style, {
+      padding: '2px 6px',
+      background: 'rgba(48, 209, 88, 0.2)',
+      color: 'var(--success)',
+      borderRadius: '4px',
+      fontSize: '11px',
+      fontWeight: '700'
+    });
+  } else if (entry.verificationLink) {
+    otpBadge.textContent = 'LINK READY';
+    Object.assign(otpBadge.style, {
+      padding: '2px 6px',
+      background: 'rgba(10, 132, 255, 0.2)',
+      color: 'var(--accent)',
+      borderRadius: '4px',
+      fontSize: '10px',
+      fontWeight: '700'
+    });
+  }
+
   footer.appendChild(date);
+  if (otpBadge.textContent) footer.appendChild(otpBadge);
   
   li.appendChild(email);
   li.appendChild(url);
   li.appendChild(footer);
 
-  // Click to copy email
-  li.title = 'Click to copy email';
-  li.addEventListener('click', async () => {
+  li.addEventListener('click', async (e) => {
+    // If a link is available, open it instead of just copying email.
+    if (entry.verificationLink) {
+      window.open(entry.verificationLink, '_blank');
+      return;
+    }
+
     try {
       await navigator.clipboard.writeText(entry.email);
       const originalText = email.textContent;
-      email.textContent = 'Copied!';
-      email.style.color = '#30d158';
+      email.textContent = 'Email Copied!';
+      email.style.color = 'var(--success)';
       setTimeout(() => {
         email.textContent = originalText;
         email.style.color = '';

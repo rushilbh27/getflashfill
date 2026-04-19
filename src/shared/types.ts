@@ -18,6 +18,8 @@ export interface HistoryEntry {
   email: string;
   url: string;
   date: string;
+  otp?: string;
+  verificationLink?: string;
 }
 
 export interface StorageSchema {

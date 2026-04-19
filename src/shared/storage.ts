@@ -29,6 +29,18 @@ export async function getHistory(): Promise<HistoryEntry[]> {
 
 export async function addToHistory(entry: HistoryEntry): Promise<void> {
   const current = await getHistory();
-  const next = [entry, ...current].slice(0, 5);
+  const next = [entry, ...current].slice(0, 10); // Keep last 10
   await chrome.storage.local.set({ history: next });
+}
+
+export async function updateHistoryEntry(
+  email: string,
+  update: Partial<HistoryEntry>,
+): Promise<void> {
+  const history = await getHistory();
+  const index = history.findIndex((h) => h.email === email);
+  if (index !== -1) {
+    history[index] = { ...history[index]!, ...update };
+    await chrome.storage.local.set({ history });
+  }
 }

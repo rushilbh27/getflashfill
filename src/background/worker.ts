@@ -23,7 +23,7 @@
 import md5 from 'md5';
 import { generateIdentity } from '../shared/identity';
 import { extractOTP, extractLink } from '../shared/otp-extractor';
-import { getApiKey, getSession, setSession, addToHistory } from '../shared/storage';
+import { getApiKey, getSession, setSession, addToHistory, updateHistoryEntry } from '../shared/storage';
 import type { ContentToWorkerMessage, WorkerToContentMessage } from '../shared/messages';
 
 // ─── constants ────────────────────────────────────────────────────────────────
@@ -172,6 +172,10 @@ async function pollOnce(): Promise<void> {
 
     if (otp) {
       const tabId = pollingState.tabId;
+      const session = await getSession();
+      if (session) {
+        await updateHistoryEntry(session.email, { otp });
+      }
       stopPolling();
       await sendToTab(tabId, { type: 'OTP_FOUND', payload: { code: otp } });
       return;
@@ -180,6 +184,10 @@ async function pollOnce(): Promise<void> {
     const link = findLinkInMessages(messages);
     if (link) {
       const tabId = pollingState.tabId;
+      const session = await getSession();
+      if (session) {
+        await updateHistoryEntry(session.email, { verificationLink: link });
+      }
       stopPolling();
       // Auto-open magic link in a new foreground tab.
       await chrome.tabs.create({ url: link, active: true });
