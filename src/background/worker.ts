@@ -22,6 +22,7 @@
 
 import md5 from 'md5';
 import { generateIdentity } from '../shared/identity';
+import { extractOTP } from '../shared/otp-extractor';
 import { getApiKey, getSession, setSession, addToHistory } from '../shared/storage';
 import type { ContentToWorkerMessage, WorkerToContentMessage } from '../shared/messages';
 
@@ -75,16 +76,6 @@ async function sendToTab(tabId: number, message: WorkerToContentMessage): Promis
 }
 
 // ─── OTP extraction ───────────────────────────────────────────────────────────
-
-function extractOTP(text: string): string | null {
-  // Try most-common length first (6), then 4, then 8.
-  const patterns: RegExp[] = [/\b(\d{6})\b/, /\b(\d{4})\b/, /\b(\d{8})\b/];
-  for (const pattern of patterns) {
-    const match = pattern.exec(text);
-    if (match?.[1]) return match[1];
-  }
-  return null;
-}
 
 function findOTPInMessages(messages: TempmailMessage[]): string | null {
   for (const msg of messages) {
