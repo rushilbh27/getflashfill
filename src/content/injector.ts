@@ -20,6 +20,7 @@
 import type { Identity } from '../shared/types';
 import type { ContentToWorkerMessage, WorkerToContentMessage } from '../shared/messages';
 import type { EmailFieldFoundDetail } from './detector';
+import { detectEmailField } from './detector';
 
 // ---- constants ----
 
@@ -54,6 +55,10 @@ const TOAST_ANIMATE_MS = 200;
 
 let currentEmailField: HTMLInputElement | null = null;
 let submitListenerAttachedFor: HTMLFormElement | null = null;
+
+// Prevents sending REQUEST_IDENTITY twice for the same field reference.
+// Reset when a new field is found (SPA navigation / new modal).
+let identityRequestedFor: HTMLInputElement | null = null;
 
 // ---- small helpers ----
 
@@ -182,12 +187,22 @@ function attachSubmitListener(form: HTMLFormElement, email: string): void {
 
 // ---- email flow entrypoints ----
 
+/**
+ * Central place to request an identity for a detected field.
+ * Guards against double-requesting for the same element (can happen when both
+ * the startup scan and the event listener fire for the same field).
+ */
+function requestIdentityForField(field: HTMLInputElement): void {
+  if (identityRequestedFor === field) return;
+  identityRequestedFor = field;
+  currentEmailField = field;
+  sendToWorker({ type: 'REQUEST_IDENTITY', payload: { url: location.href } });
+}
+
 function handleEmailFieldFound(event: Event): void {
   const detail = (event as CustomEvent<EmailFieldFoundDetail>).detail;
   if (!detail?.field) return;
-
-  currentEmailField = detail.field;
-  sendToWorker({ type: 'REQUEST_IDENTITY', payload: { url: location.href } });
+  requestIdentityForField(detail.field);
 }
 
 async function handleIdentityReady(identity: Identity): Promise<void> {
@@ -338,6 +353,17 @@ export function showToast(message: string, duration: number = TOAST_DEFAULT_MS):
 // ---- wiring ----
 
 document.addEventListener(EMAIL_FIELD_FOUND_EVENT, handleEmailFieldFound);
+
+// Startup self-check — fixes the CRXJS async-module race condition where
+// detector.ts fires 'flashfill:emailFieldFound' before injector.ts has
+// registered its listener. On load we scan the DOM directly so we never
+// depend on catching an event that may have already fired.
+setTimeout(() => {
+  const field = detectEmailField();
+  if (field && !field.value.trim()) {
+    requestIdentityForField(field);
+  }
+}, 0);
 
 if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener((message: WorkerToContentMessage) => {
