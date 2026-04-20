@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "description": "Zero-click burner identity and OTP automation for signup forms.",
   "permissions": ["storage", "activeTab", "scripting", "tabs", "alarms"],
+  "host_permissions": [
+    "*://*.rapidapi.com/*"
+  ],
   "background": {
     "service_worker": "src/background/worker.ts",
     "type": "module"

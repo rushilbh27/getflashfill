@@ -111,7 +111,7 @@ function hasNameFields(container: Element): boolean {
   return false;
 }
 
-function containerQualifies(container: Element): boolean {
+export function containerQualifies(container: Element): boolean {
   const haystack = container instanceof HTMLFormElement
     ? formHaystack(container)
     : normalise(container.getAttribute('class')) + ' ' + normalise(container.getAttribute('id'));

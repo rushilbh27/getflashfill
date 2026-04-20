@@ -1,18 +1,40 @@
-import { getApiKey, setApiKey, clearSession, getHistory } from '../shared/storage';
+import { getApiKey, setApiKey, clearSession, getHistory, getSession } from '../shared/storage';
 import type { HistoryEntry } from '../shared/types';
+import type { WorkerToContentMessage } from '../shared/messages';
+
+let currentVerificationLink: string | null = null;
 
 async function render(): Promise<void> {
   const apiKey = await getApiKey();
   const setupSection = document.getElementById('setup-section');
   const activeSection = document.getElementById('active-section');
-  if (!setupSection || !activeSection) return;
+  const linkSection = document.getElementById('link-fallback-section');
+  if (!setupSection || !activeSection || !linkSection) return;
 
   if (!apiKey) {
     setupSection.classList.add('active');
     activeSection.classList.remove('active');
+    linkSection.classList.remove('active');
   } else {
     setupSection.classList.remove('active');
     activeSection.classList.add('active');
+    
+    // Check if the current session has an unread or active verification link
+    const session = await getSession();
+    if (session) {
+      const history = await getHistory();
+      const entry = history.find(h => h.email === session.email);
+      if (entry && entry.verificationLink) {
+        currentVerificationLink = entry.verificationLink;
+      }
+    }
+
+    if (currentVerificationLink) {
+      linkSection.classList.add('active');
+    } else {
+      linkSection.classList.remove('active');
+    }
+
     await renderHistory();
   }
 }
@@ -93,7 +115,7 @@ function renderEntry(entry: HistoryEntry): HTMLElement {
   li.appendChild(url);
   li.appendChild(footer);
 
-  li.addEventListener('click', async (e) => {
+  li.addEventListener('click', async () => {
     // If a link is available, open it instead of just copying email.
     if (entry.verificationLink) {
       window.open(entry.verificationLink, '_blank');
@@ -120,6 +142,7 @@ function renderEntry(entry: HistoryEntry): HTMLElement {
 function attachHandlers(): void {
   const saveBtn = document.getElementById('save-key-btn');
   const clearBtn = document.getElementById('clear-session-btn');
+  const openLinkBtn = document.getElementById('open-link-btn');
   const input = document.getElementById('api-key-input') as HTMLInputElement | null;
 
   saveBtn?.addEventListener('click', async () => {
@@ -134,6 +157,22 @@ function attachHandlers(): void {
     await clearSession();
     window.location.reload();
   });
+
+  openLinkBtn?.addEventListener('click', () => {
+    if (currentVerificationLink) {
+      window.open(currentVerificationLink, '_blank');
+    }
+  });
+
+  if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+    chrome.runtime.onMessage.addListener((message: WorkerToContentMessage) => {
+      if (message.type === 'LINK_FOUND') {
+        currentVerificationLink = message.payload.url;
+        const linkSection = document.getElementById('link-fallback-section');
+        if (linkSection) linkSection.classList.add('active');
+      }
+    });
+  }
 }
 
 document.addEventListener('DOMContentLoaded', () => {

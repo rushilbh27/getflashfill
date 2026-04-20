@@ -9,7 +9,7 @@ export function generateIdentity(email: string): Identity {
     firstName,
     lastName,
     fullName: `${firstName} ${lastName}`,
-    username: faker.internet.userName(),
+    username: 'ff' + Date.now().toString(36).slice(-4) + Math.random().toString(36).slice(2, 8),
     password: faker.internet.password({ length: 16, memorable: false, prefix: 'Ff1!' }),
   };
 }

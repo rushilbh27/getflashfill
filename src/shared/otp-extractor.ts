@@ -9,32 +9,49 @@
 export function extractOTP(text: string): string | null {
   if (!text) return null;
 
-  // 1. Prioritize codes following explicit "code" keywords.
+  // Remove URLs to avoid falsely extracting tokens or IDs embedded within them.
+  const textWithoutUrls = text.replace(/https?:\/\/[^\s"'<>]+/g, '');
+
+  // Strip HTML tags so <h1>123456</h1> just becomes 123456
+  const cleanText = textWithoutUrls.replace(/<[^>]+>/g, ' ');
+
+  // 1. Prioritize codes following explicit keywords.
+  //    Collect ALL matches, then prefer the longest (6-digit beats 4-digit).
   const contextPatterns = [
-    /(?:code|verification|otp|pin|password|pw|identifier|ref|id)[^\d\n]{1,10}(\d{4,8})\b/i,
-    /\b(\d{4,8})[^\d\n]{1,10}(?:is your|code|otp)/i,
+    /(?:code|verify|verification|otp|pin|password|pw|identifier|ref|id)[\s\S]{1,60}?\b(\d{4,8})\b/gi,
+    /\b(\d{4,8})[\s\S]{1,60}?(?:is your|code|otp)/gi,
+    // Alphanumeric support for 6-to-8 char codes (e.g. 29457F12) if near keywords. Require at least one digit to avoid normal words.
+    /(?:code|verify|verification|otp|pin|password)[\s\S]{1,60}?\b(?=[a-z0-9]*[0-9])([a-z0-9]{6,8})\b/gi
   ];
 
+  const contextMatches: string[] = [];
   for (const pattern of contextPatterns) {
-    const match = pattern.exec(text);
-    if (match && match[1]) return match[1];
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(cleanText)) !== null) {
+      if (match[1]) contextMatches.push(match[1]);
+    }
+  }
+  if (contextMatches.length > 0) {
+    // Return the longest match — prefer the FIRST match of the longest length since earlier patterns are higher confidence.
+    return contextMatches.reduce((best, cur) => cur.length > best.length ? cur : best).toUpperCase();
   }
 
-  // 2. High-confidence numeric patterns (specifically 6 or 4 digits with boundaries).
-  // We ignore 4-digit numbers that look like years (19xx, 20xx) unless they had context above.
+  // 2. High-confidence numeric patterns — check 6/8 digits BEFORE 4 to prefer longer codes.
   const purePatterns = [
     /\b\d{6}\b/,
-    /\b(?!(?:19|20)\d{2})\d{4}\b/, // 4 digits, but not 1900-2099
     /\b\d{8}\b/,
+    /\b(?!(?:19|20)\d{2})\d{4}\b/, // 4 digits, but not 1900-2099
+    // Pure alphanumeric 6-to-8 char code (must contain both letters and numbers to avoid matching words like "VERIFY")
+    /\b(?=[a-zA-Z0-9]*[0-9])(?=[a-zA-Z0-9]*[a-zA-Z])[a-zA-Z0-9]{6,8}\b/
   ];
 
   for (const pattern of purePatterns) {
-    const match = pattern.exec(text);
-    if (match) return match[0];
+    const match = pattern.exec(cleanText);
+    if (match) return match[0].toUpperCase();
   }
 
-  // 3. Last resort: any 4-8 digits not surrounded by other digits.
-  const fallback = /\b\d{4,8}\b/.exec(text);
+  // 3. Last resort: 5 or 7 digits.
+  const fallback = /\b(?:\d{5}|\d{7})\b/.exec(cleanText);
   return fallback ? fallback[0] : null;
 }
 
@@ -56,20 +73,32 @@ export function extractLink(text: string): string | null {
     { word: 'activate', score: 10 },
     { word: 'magic', score: 8 },
     { word: 'login', score: 5 },
+    { word: 'auth', score: 5 },
+    { word: 'token', score: 5 },
+    { word: 'session', score: 5 },
     { word: 'click', score: 3 },
+    { word: 'continue', score: 3 },
   ];
 
-  const ignoreList = ['unsubscribe', 'policy', 'terms', 'privacy', 'help', 'support', 'contact'];
+  const ignoreList = [
+    'unsubscribe', 'policy', 'terms', 'privacy', 'help', 'support', 'contact', 
+    '.png', '.jpg', '.jpeg', '.gif', 'w3.org', 'schema.org'
+  ];
 
   let bestLink: string | null = null;
-  let highestScore = -1;
+  let highestScore = 0;
+  
+  // Keep track of valid links in case we need a fallback
+  const validLinks: string[] = [];
 
   for (const url of matches) {
     let score = 0;
     const lowerUrl = url.toLowerCase();
 
-    // Skip obviously wrong links.
+    // Skip obviously wrong or static asset links.
     if (ignoreList.some(ignore => lowerUrl.includes(ignore))) continue;
+    
+    validLinks.push(url);
 
     for (const { word, score: points } of keywords) {
       if (lowerUrl.includes(word)) score += points;
@@ -81,13 +110,13 @@ export function extractLink(text: string): string | null {
     }
   }
 
-  // If no keywords matched, but we only have one link, take it.
-  if (highestScore === 0 && matches.length === 1) {
-    const singleLink = matches[0]!;
-    if (!ignoreList.some(ignore => singleLink.toLowerCase().includes(ignore))) {
-      return singleLink;
-    }
+  // If no keywords matched, but we have valid links, 
+  // return the longest one (verification links with tokens are typically very long).
+  if (highestScore === 0 && validLinks.length > 0) {
+    return validLinks.reduce((longest, current) => 
+      current.length > longest.length ? current : longest
+    );
   }
 
-  return highestScore >= 0 ? bestLink : null;
+  return bestLink;
 }

@@ -6,6 +6,8 @@
  *   service worker (REQUEST_IDENTITY).
  * - On IDENTITY_READY from the service worker → ghost-fill the email field
  *   and any related name / username fields in the same form.
+ * - CACHE the identity locally so multi-step flows (Step 2, 3, etc.) can
+ *   be filled INSTANTLY via MutationObserver without a worker round-trip.
  * - Hook the form's submit event after filling → send FORM_SUBMITTED.
  * - On OTP_FOUND from the service worker → locate the OTP field (retry up
  *   to 5s), ghost-fill it, click the verify button, and toast success.
@@ -31,8 +33,9 @@ const VERIFY_BUTTON_KEYWORDS = ['verify', 'submit', 'confirm', 'continue'] as co
 const FIRST_NAME_KEYWORDS = ['first', 'fname', 'given'] as const;
 const LAST_NAME_KEYWORDS = ['last', 'lname', 'surname'] as const;
 const NAME_KEYWORDS = ['name', 'full_name', 'fullname', 'your name', 'display'] as const;
-const USERNAME_KEYWORDS = ['username', 'user_name', 'user-name'] as const;
+const USERNAME_KEYWORDS = ['username', 'user_name', 'user-name', 'user name'] as const;
 const PASSWORD_KEYWORDS = ['password', 'passwd', 'pass'] as const;
+const EMAIL_KEYWORDS = ['email', 'mail', 'user_email', 'e-mail'] as const;
 
 const NON_TEXT_INPUT_TYPES = [
   'checkbox',
@@ -60,6 +63,20 @@ let submitListenerAttachedFor: HTMLFormElement | null = null;
 // Prevents sending REQUEST_IDENTITY twice for the same field reference.
 // Reset when a new field is found (SPA navigation / new modal).
 let identityRequestedFor: HTMLInputElement | null = null;
+
+/**
+ * LOCAL IDENTITY CACHE — the key to multi-step support.
+ * Once we receive an identity from the worker, we store it here.
+ * When new fields appear (Step 2, 3, etc.), we use this cached identity
+ * to fill them instantly without any worker round-trip.
+ */
+let cachedIdentity: Identity | null = null;
+
+/**
+ * Track which input elements we've already filled to avoid double-filling.
+ * Uses a WeakSet so entries are garbage-collected when elements leave the DOM.
+ */
+const filledInputs = new WeakSet<HTMLInputElement>();
 
 // ---- small helpers ----
 
@@ -136,45 +153,81 @@ async function ghostFillSingle(field: HTMLInputElement, value: string): Promise<
   field.dispatchEvent(new Event('blur', { bubbles: true }));
 }
 
+/**
+ * Classify an input and return the value it should be filled with,
+ * or null if it's not a field we recognise.
+ */
+function classifyInput(el: HTMLInputElement, identity: Identity): string | null {
+  const type = normaliseAttr(el.getAttribute('type'));
+  if (NON_TEXT_INPUT_TYPES.includes(type)) return null;
+
+  const hay = attrHaystack(el);
+
+  // Email field
+  if (type === 'email' || includesAny(hay, EMAIL_KEYWORDS)) {
+    return identity.email;
+  }
+
+  // Password fields (including "confirm password")
+  if (type === 'password' || includesAny(hay, PASSWORD_KEYWORDS)) {
+    return identity.password;
+  }
+
+  // Username
+  if (includesAny(hay, USERNAME_KEYWORDS)) {
+    return identity.username;
+  }
+
+  // First name
+  if (includesAny(hay, FIRST_NAME_KEYWORDS)) {
+    return identity.firstName;
+  }
+
+  // Last name
+  if (includesAny(hay, LAST_NAME_KEYWORDS)) {
+    return identity.lastName;
+  }
+
+  // Generic name
+  if (includesAny(hay, NAME_KEYWORDS)) {
+    return identity.fullName;
+  }
+
+  return null;
+}
+
 export async function ghostFillForm(
-  field: HTMLInputElement,
+  field: HTMLInputElement | null,
   identity: Identity,
-): Promise<void> {
-  if (!document.body.contains(field)) return;
+): Promise<boolean> {
+  let filledSomething = false;
 
-  await ghostFillSingle(field, identity.email);
+  // Fill the primary email field if provided and present.
+  if (field && document.body.contains(field) && !filledInputs.has(field)) {
+    await ghostFillSingle(field, identity.email);
+    filledInputs.add(field);
+    filledSomething = true;
+  }
 
-  // Look in the parent form, or fall back to a logical container for SPAs.
-  const container: Element | null =
-    field.closest('form') ??
-    field.closest<Element>('[role="form"], section, [data-testid], main, .card, .modal, [class*="form"]');
-  if (!container) return;
+  // Scan ALL visible inputs on the page for fillable fields.
+  // This is intentionally aggressive — we fill anything we recognise.
+  const allInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input'));
 
-  const siblings = Array.from(container.querySelectorAll<HTMLInputElement>('input')).filter(
-    (el) => el !== field,
-  );
+  for (const el of allInputs) {
+    if (el === field) continue;             // Already handled above
+    if (filledInputs.has(el)) continue;     // Already filled
+    if (el.offsetParent === null) continue;  // Not visible
+    if (el.value.trim().length > 0) continue; // Already has a value
 
-  for (const el of siblings) {
-    const type = normaliseAttr(el.getAttribute('type'));
-    if (NON_TEXT_INPUT_TYPES.includes(type)) continue;
-    if (el.value.trim().length > 0) continue;
-
-    const hay = attrHaystack(el);
-
-    if (type === 'password' || includesAny(hay, PASSWORD_KEYWORDS)) {
-      // Always fill password fields with the generated password.
-      await ghostFillSingle(el, identity.password);
-    } else if (includesAny(hay, FIRST_NAME_KEYWORDS)) {
-      await ghostFillSingle(el, identity.firstName);
-    } else if (includesAny(hay, LAST_NAME_KEYWORDS)) {
-      await ghostFillSingle(el, identity.lastName);
-    } else if (includesAny(hay, USERNAME_KEYWORDS)) {
-      await ghostFillSingle(el, identity.username);
-    } else if (includesAny(hay, NAME_KEYWORDS)) {
-      // Generic "name" field — use full name.
-      await ghostFillSingle(el, identity.fullName);
+    const value = classifyInput(el, identity);
+    if (value) {
+      await ghostFillSingle(el, value);
+      filledInputs.add(el);
+      filledSomething = true;
     }
   }
+
+  return filledSomething;
 }
 
 // ---- submit wiring ----
@@ -193,6 +246,47 @@ function attachSubmitListener(form: HTMLFormElement, email: string): void {
     },
     { once: true },
   );
+}
+
+/**
+ * Also intercept button clicks that might submit multi-step forms
+ * without a real form submit event (common in React SPAs).
+ */
+/**
+ * Intercept button clicks to:
+ * 1. Schedule fill retries for next-step forms that appear after click
+ * 2. Send FORM_SUBMITTED ONLY when the FINAL step button is clicked
+ *    (i.e., when no new form fields appear after the click).
+ *    This prevents starting OTP polling too early.
+ */
+function attachButtonClickListeners(identity: Identity): void {
+  const buttons = document.querySelectorAll<HTMLElement>('button, [role="button"], input[type="submit"]');
+  for (const btn of Array.from(buttons)) {
+    const text = (btn.textContent ?? '').toLowerCase();
+    const submitKeywords = ['next', 'continue', 'create', 'sign up', 'signup', 'register', 'submit', 'join'];
+    if (submitKeywords.some(kw => text.includes(kw))) {
+      btn.addEventListener('click', () => {
+        const isLikelyFinalStep = ['create', 'sign up', 'signup', 'register', 'submit', 'join'].some(kw => text.includes(kw));
+
+        // Always try to fill any new fields that load after click.
+        setTimeout(() => void tryFillNewFields(), 500);
+        setTimeout(() => void tryFillNewFields(), 1000);
+        setTimeout(() => void tryFillNewFields(), 2000);
+
+        if (isLikelyFinalStep) {
+          // Wait a bit — if we filled more fields, it wasn't the final step.
+          // If we didn't fill anything new, it IS the final step → start polling.
+          setTimeout(() => {
+            console.log('[FlashFill] Final step detected — starting OTP polling');
+            sendToWorker({
+              type: 'FORM_SUBMITTED',
+              payload: { url: location.href, email: identity.email },
+            });
+          }, 2500);
+        }
+      }, { once: true });
+    }
+  }
 }
 
 // ---- email flow entrypoints ----
@@ -218,17 +312,124 @@ function handleEmailFieldFound(event: Event): void {
 
 async function handleIdentityReady(identity: Identity): Promise<void> {
   console.log('[FlashFill] IDENTITY_READY received:', identity);
-  const field = currentEmailField;
+
+  // CACHE IT — this is the key for multi-step support.
+  cachedIdentity = identity;
+
+  // If we don't have a field reference, try to find it now.
+  let field = currentEmailField;
   if (!field || !document.body.contains(field)) {
-    console.warn('[FlashFill] Email field gone from DOM, cannot fill.');
-    return;
+    field = detectEmailField();
   }
 
-  await ghostFillForm(field, identity);
-  console.log('[FlashFill] Ghost-fill complete.');
+  const filledSomething = await ghostFillForm(field, identity);
+  console.log('[FlashFill] Ghost-fill complete. Filled:', filledSomething);
 
-  const form = field.closest('form');
+  // Attach both form submit and button click listeners.
+  const form = field?.closest('form') ?? document.querySelector('form');
   if (form) attachSubmitListener(form, identity.email);
+  attachButtonClickListeners(identity);
+
+  // Start watching for new fields (Step 2, 3, etc.)
+  startFieldWatcher();
+}
+
+// ---- MULTI-STEP FIELD WATCHER ----
+
+let fieldWatcherRunning = false;
+
+/**
+ * Try to fill any new unfilled fields on the page using the cached identity.
+ * This is called by the MutationObserver and scheduled retries.
+ */
+async function tryFillNewFields(): Promise<void> {
+  if (!cachedIdentity) return;
+
+  const allInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input'));
+  let filledSomething = false;
+
+  for (const el of allInputs) {
+    if (filledInputs.has(el)) continue;
+    if (el.offsetParent === null) continue;
+    if (el.value.trim().length > 0) continue;
+
+    const value = classifyInput(el, cachedIdentity);
+    if (value) {
+      await ghostFillSingle(el, value);
+      filledInputs.add(el);
+      filledSomething = true;
+    }
+  }
+
+  if (filledSomething) {
+    console.log('[FlashFill] Multi-step: filled new fields on current page');
+    showToast('FlashFill: Filled next step!');
+
+    // Re-attach button listeners for the new step's buttons.
+    attachButtonClickListeners(cachedIdentity);
+
+    // Attach submit listener to any new form.
+    const form = document.querySelector('form');
+    if (form) attachSubmitListener(form, cachedIdentity.email);
+  }
+}
+
+/**
+ * Start a MutationObserver that watches for new input elements appearing
+ * in the DOM. When detected, try to fill them with the cached identity.
+ * This handles Step 2, 3, etc. of multi-step signup flows INSTANTLY.
+ * Also watches for OTP input patterns appearing, triggering email polling.
+ */
+function startFieldWatcher(): void {
+  if (fieldWatcherRunning) return;
+  fieldWatcherRunning = true;
+
+  console.log('[FlashFill] Field watcher started — watching for multi-step forms');
+
+let otpPollingTriggered = false;
+
+  const observer = new MutationObserver((mutations) => {
+    // Check if any new input elements were added.
+    let hasNewInputs = false;
+    for (const mutation of mutations) {
+      for (const node of Array.from(mutation.addedNodes)) {
+        if (node instanceof HTMLInputElement) {
+          hasNewInputs = true;
+          break;
+        }
+        if (node instanceof HTMLElement && node.querySelector('input')) {
+          hasNewInputs = true;
+          break;
+        }
+      }
+      if (hasNewInputs) break;
+    }
+
+    if (hasNewInputs) {
+      // Small delay to let the SPA framework finish rendering.
+      setTimeout(() => void tryFillNewFields(), 300);
+
+      // Also check if OTP fields just appeared — if so, start polling.
+      setTimeout(() => {
+        if (!cachedIdentity || otpPollingTriggered) return;
+        const otpFields = findOTPFields();
+        if (otpFields.length > 0) {
+          otpPollingTriggered = true;
+          console.log('[FlashFill] OTP field detected in DOM — triggering polling');
+          showToast('FlashFill: Verification code requested — checking inbox...');
+          sendToWorker({
+            type: 'FORM_SUBMITTED',
+            payload: { url: location.href, email: cachedIdentity.email },
+          });
+        }
+      }, 600);
+    }
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+  });
 }
 
 // ---- OTP ----
@@ -317,8 +518,8 @@ async function waitForOTPFields(): Promise<HTMLInputElement[]> {
   return [];
 }
 
-async function handleOTPFound(code: string): Promise<void> {
-  // If it's a magic link, the worker already opened it. Just notify.
+async function handleOTPFound(code: string, link?: string | null): Promise<void> {
+  // If it's a magic link ONLY, the worker already opened it. Just notify.
   if (code === 'Magic Link') {
     showToast('Magic link detected & opened!');
     return;
@@ -326,6 +527,11 @@ async function handleOTPFound(code: string): Promise<void> {
 
   const fields = await waitForOTPFields();
   if (fields.length === 0) {
+    if (link) {
+      showToast('No OTP field found, opening verification link...');
+      chrome.runtime.sendMessage({ type: 'OPEN_TAB', payload: { url: link } });
+      return;
+    }
     showToast('OTP received but no input field found');
     return;
   }
@@ -384,6 +590,7 @@ export function showToast(message: string, duration: number = TOAST_DEFAULT_MS):
   Object.assign(toast.style, {
     background: 'rgba(18, 18, 18, 0.8)',
     backdropFilter: 'blur(12px) saturate(180%)',
+    // @ts-expect-error vendor prefix not in CSSStyleDeclaration type
     WebkitBackdropFilter: 'blur(12px) saturate(180%)',
     color: '#ffffff',
     padding: '12px 18px',
@@ -439,8 +646,13 @@ document.addEventListener(EMAIL_FIELD_FOUND_EVENT, handleEmailFieldFound);
 setTimeout(() => {
   const field = detectEmailField();
   console.log('[FlashFill] Startup self-check — detected field:', field);
+  
+  // Primary flow: we found an email field, request identity.
   if (field && !field.value.trim()) {
     requestIdentityForField(field);
+  } else {
+    // Secondary flow: maybe we are on Step 2 of a signup? Ask worker to resume.
+    sendToWorker({ type: 'RESUME_SESSION', payload: { url: location.href } });
   }
 }, 0);
 
@@ -451,10 +663,13 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
         void handleIdentityReady(message.payload.identity);
         break;
       case 'OTP_FOUND':
-        void handleOTPFound(message.payload.code);
+        void handleOTPFound(message.payload.code, message.payload.link);
         break;
       case 'OTP_TIMEOUT':
-        showToast('OTP timeout — check your inbox manually');
+        showToast('OTP timeout — email never arrived');
+        break;
+      case 'POLLING_STARTED':
+        showToast('FlashFill: Waiting for verification email... (up to 90s)');
         break;
       case 'DOMAIN_REJECTED':
         showToast(`Domain rejected (${message.payload.triedDomain}) — rotating`);

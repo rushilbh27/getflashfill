@@ -23,7 +23,7 @@
 import md5 from 'md5';
 import { generateIdentity } from '../shared/identity';
 import { extractOTP, extractLink } from '../shared/otp-extractor';
-import { getApiKey, getSession, setSession, addToHistory, updateHistoryEntry } from '../shared/storage';
+import { getApiKey, getSession, setSession, addToHistory, updateHistoryEntry, getHistory } from '../shared/storage';
 import type { ContentToWorkerMessage, WorkerToContentMessage } from '../shared/messages';
 
 // ─── constants ────────────────────────────────────────────────────────────────
@@ -39,8 +39,9 @@ const API_BASE = `https://${API_HOST}`;
 // ─── API types ────────────────────────────────────────────────────────────────
 
 interface TempmailMessage {
-  subject: string;
-  body:    string;
+  mail_subject?: string;
+  mail_text?:    string;
+  mail_html?:    string;
 }
 
 class ApiError extends Error {
@@ -79,7 +80,8 @@ async function sendToTab(tabId: number, message: WorkerToContentMessage): Promis
 
 function findOTPInMessages(messages: TempmailMessage[]): string | null {
   for (const msg of messages) {
-    const otp = extractOTP(msg.subject) ?? extractOTP(msg.body);
+    const textToSearch = `${msg.mail_subject || ''} ${msg.mail_text || ''} ${msg.mail_html || ''}`;
+    const otp = extractOTP(textToSearch);
     if (otp) return otp;
   }
   return null;
@@ -87,7 +89,8 @@ function findOTPInMessages(messages: TempmailMessage[]): string | null {
 
 function findLinkInMessages(messages: TempmailMessage[]): string | null {
   for (const msg of messages) {
-    const link = extractLink(msg.body);
+    const textToSearch = `${msg.mail_text || ''} ${msg.mail_html || ''}`;
+    const link = extractLink(textToSearch);
     if (link) return link;
   }
   return null;
@@ -118,21 +121,26 @@ async function fetchMessages(
   apiKey:    string,
 ): Promise<TempmailMessage[]> {
   const res = await fetch(
-    `${API_BASE}/request/mail/id/${encodeURIComponent(emailHash)}`,
+    `${API_BASE}/request/mail/id/${encodeURIComponent(emailHash)}/`,
     { method: 'GET', headers: apiHeaders(apiKey) },
   );
   if (res.status === 429) throw new ApiError(429, 'Rate limit');
   if (!res.ok)            throw new ApiError(res.status, `Poll failed: ${res.status}`);
 
-  // API returns an object with a "mail" array, or an empty array, depending
-  // on whether any messages have arrived yet.
   const data: unknown = await res.json();
-  if (Array.isArray(data)) return data as TempmailMessage[];
-  // Some API versions wrap messages in { mail: [...] }
-  if (data && typeof data === 'object' && 'mail' in data) {
-    return (data as { mail: TempmailMessage[] }).mail ?? [];
+  let messages: any[] = [];
+  
+  if (Array.isArray(data)) {
+    messages = data;
+  } else if (data && typeof data === 'object' && 'mail' in data) {
+    messages = (data as { mail: any[] }).mail ?? [];
   }
-  return [];
+
+  // Privatix temp mail returns {"error": "There are no messages yet"} inside an array or object
+  // when the inbox is empty. We must filter these out.
+  messages = messages.filter(msg => msg && !msg.error && (msg.mail_text || msg.mail_html || msg.mail_subject));
+  
+  return messages as TempmailMessage[];
 }
 
 /**
@@ -168,31 +176,48 @@ async function pollOnce(): Promise<void> {
 
   try {
     const messages = await fetchMessages(pollingState.emailHash, apiKey);
+    
+    // Debug logging to see exactly what we get and what we extract
+    if (messages && messages.length > 0) {
+      console.log('[FlashFill] Received messages:', messages.length);
+      console.log('[FlashFill] Message 0 subject:', messages[0].mail_subject);
+      console.log('[FlashFill] Message 0 text snippet:', (messages[0].mail_text || '').substring(0, 150));
+    }
+    
     const otp = findOTPInMessages(messages);
-
-    if (otp) {
-      const tabId = pollingState.tabId;
-      const session = await getSession();
-      if (session) {
-        await updateHistoryEntry(session.email, { otp });
-      }
-      stopPolling();
-      await sendToTab(tabId, { type: 'OTP_FOUND', payload: { code: otp } });
-      return;
+    const link = findLinkInMessages(messages);
+    
+    if (messages && messages.length > 0) {
+      console.log('[FlashFill] Extraction results -> otp:', otp, 'link:', link);
     }
 
-    const link = findLinkInMessages(messages);
-    if (link) {
+    if (otp || link) {
       const tabId = pollingState.tabId;
       const session = await getSession();
       if (session) {
-        await updateHistoryEntry(session.email, { verificationLink: link });
+        const updates: any = {};
+        if (otp) updates.otp = otp;
+        if (link) updates.verificationLink = link;
+        await updateHistoryEntry(session.email, updates);
       }
       stopPolling();
-      // Auto-open magic link in a new foreground tab.
-      await chrome.tabs.create({ url: link, active: true });
-      // Notify the original tab.
-      await sendToTab(tabId, { type: 'OTP_FOUND', payload: { code: 'Magic Link' } });
+
+      if (link) {
+        try {
+          // Broadcast to popup if it's currently open
+          chrome.runtime.sendMessage({ type: 'LINK_FOUND', payload: { url: link } });
+        } catch {}
+      }
+
+      if (link && !otp) {
+        // Auto-open magic link in a new foreground tab.
+        await chrome.tabs.create({ url: link, active: true });
+        await sendToTab(tabId, { type: 'OTP_FOUND', payload: { code: 'Magic Link' } });
+      } else {
+        // If we found an OTP, we trigger the autofill in the tab.
+        // We also send the link (if any) so the content script can optionally fallback if no input field is found.
+        await sendToTab(tabId, { type: 'OTP_FOUND', payload: { code: otp as string, link: link } });
+      }
       return;
     }
   } catch (err) {
@@ -231,6 +256,7 @@ export function startOTPPolling(emailHash: string, tabId: number): void {
 
   chrome.alarms.create(ALARM_NAME, { delayInMinutes: ALARM_DELAY_MIN });
   void pollOnce();
+  void sendToTab(tabId, { type: 'POLLING_STARTED' });
 }
 
 // ─── REQUEST_IDENTITY ─────────────────────────────────────────────────────────
@@ -247,11 +273,21 @@ async function handleRequestIdentity(url: string, tabId: number): Promise<void> 
     return;
   }
 
-  // Quota protection — reuse session if the URL hasn't changed.
+  // Quota protection — reuse session if the domain matches and it's recent (e.g. 30 mins).
   const existing = await getSession();
-  if (existing && existing.associatedUrl === url) {
-    console.log('[FlashFill] Reusing existing session for', url);
-    const identity = generateIdentity(existing.email);
+  const currentDomain = new URL(url).hostname;
+  const existingDomain = existing ? new URL(existing.associatedUrl).hostname : null;
+
+  if (existing && existingDomain === currentDomain && (Date.now() - existing.createdAt < 30 * 60 * 1000)) {
+    console.log('[FlashFill] Reusing existing session identity for', url);
+    const identity = existing.identity || generateIdentity(existing.email);
+    
+    // If identity wasn't stored, store it now for consistency.
+    if (!existing.identity) {
+      existing.identity = identity;
+      await setSession(existing);
+    }
+    
     await sendToTab(tabId, { type: 'IDENTITY_READY', payload: { identity } });
     return;
   }
@@ -277,6 +313,7 @@ async function handleRequestIdentity(url: string, tabId: number): Promise<void> 
       token:         emailHash, // repurposing token field to store the hash
       createdAt:     Date.now(),
       associatedUrl: url,
+      identity,
     });
 
     await addToHistory({
@@ -304,15 +341,46 @@ async function handleRequestIdentity(url: string, tabId: number): Promise<void> 
   }
 }
 
+// ─── RESUME_SESSION ──────────────────────────────────────────────────────────
+
+async function handleResumeSession(url: string, tabId: number): Promise<void> {
+  const session = await getSession();
+  if (!session || !session.identity) return;
+
+  const currentDomain = new URL(url).hostname;
+  const sessionDomain = new URL(session.associatedUrl).hostname;
+
+  // Only resume if it's the same domain and fairly recent (30 mins).
+  if (currentDomain === sessionDomain && (Date.now() - session.createdAt < 30 * 60 * 1000)) {
+    console.log('[FlashFill] Resuming session for multi-step flow on', url);
+    await sendToTab(tabId, { type: 'IDENTITY_READY', payload: { identity: session.identity, isResumed: true } });
+  }
+}
+
 // ─── FORM_SUBMITTED / OTP_URL_DETECTED ───────────────────────────────────────
 
 async function handleStartPolling(tabId: number): Promise<void> {
-  if (pollingState) return;
+  // If polling is already running, don't start another loop.
+  if (pollingState) {
+    console.log('[FlashFill] Polling already running, ignoring FORM_SUBMITTED');
+    return;
+  }
 
   const session = await getSession();
   if (!session) return;
 
-  // session.token holds the MD5 email hash (set in handleRequestIdentity).
+  // CRITICAL FIX: To prevent an infinite loop where a newly opened Magic Link tab
+  // triggers OTP_URL_DETECTED and restarts polling (which opens another tab, etc),
+  // we must check if we already resolved this session.
+  const history = await getHistory();
+  const entry = history.find(h => h.email === session.email);
+  if (entry && (entry.otp || entry.verificationLink)) {
+    console.log('[FlashFill] Session already resolved, not re-polling');
+    return; // Already resolved, do not re-poll!
+  }
+
+  console.log('[FlashFill] Starting OTP polling for', session.email);
+  // session.token holds the MD5 email hash.
   startOTPPolling(session.token, tabId);
 }
 
@@ -337,9 +405,15 @@ chrome.runtime.onMessage.addListener(
       case 'REQUEST_IDENTITY':
         void handleRequestIdentity(message.payload.url, tabId);
         break;
+      case 'RESUME_SESSION':
+        void handleResumeSession(message.payload.url, tabId);
+        break;
       case 'FORM_SUBMITTED':
       case 'OTP_URL_DETECTED':
         void handleStartPolling(tabId);
+        break;
+      case 'OPEN_TAB':
+        chrome.tabs.create({ url: message.payload.url, active: true });
         break;
     }
   },

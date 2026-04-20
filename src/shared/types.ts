@@ -12,6 +12,7 @@ export interface SessionData {
   token: string;
   createdAt: number;
   associatedUrl: string;
+  identity?: Identity;
 }
 
 export interface HistoryEntry {
