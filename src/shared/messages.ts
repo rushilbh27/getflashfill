@@ -13,4 +13,5 @@ export type WorkerToContentMessage =
   | { type: 'POLLING_STARTED' }
   | { type: 'OTP_TIMEOUT' }
   | { type: 'DOMAIN_REJECTED'; payload: { triedDomain: string } }
-  | { type: 'IDENTITY_READY'; payload: { identity: Identity; isResumed?: boolean } };
+  | { type: 'IDENTITY_READY'; payload: { identity: Identity; isResumed?: boolean } }
+  | { type: 'SHOW_TOAST'; payload: { message: string } };

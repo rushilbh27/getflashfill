@@ -11,5 +11,6 @@ export function generateIdentity(email: string): Identity {
     fullName: `${firstName} ${lastName}`,
     username: 'ff' + Date.now().toString(36).slice(-4) + Math.random().toString(36).slice(2, 8),
     password: faker.internet.password({ length: 16, memorable: false, prefix: 'Ff1!' }),
+    phone: `(${faker.string.numeric(3)}) ${faker.string.numeric(3)}-${faker.string.numeric(4)}`,
   };
 }

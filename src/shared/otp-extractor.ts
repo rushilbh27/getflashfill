@@ -28,7 +28,13 @@ export function extractOTP(text: string): string | null {
   for (const pattern of contextPatterns) {
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(cleanText)) !== null) {
-      if (match[1]) contextMatches.push(match[1]);
+      if (!match[1]) continue;
+      let code = match[1];
+      // Strip trailing alphabetic leakage from HTML stripping without spaces.
+      // E.g., "796967If" (code immediately followed by word) → "796967".
+      const digitsOnly = code.replace(/^(\d{4,8})[a-z]+$/i, '$1');
+      if (digitsOnly.length >= 4) code = digitsOnly;
+      contextMatches.push(code);
     }
   }
   if (contextMatches.length > 0) {
@@ -57,6 +63,11 @@ export function extractOTP(text: string): string | null {
 
 /**
  * Extracts the most likely verification link from an email body.
+ *
+ * Priority order:
+ *   1. URLs containing high-value keywords (verify, confirm, redirect, etc.)
+ *   2. Non-tracker URLs that appear in the body
+ *   3. Click-tracker redirect URLs (last resort — often fail when opened outside email client)
  */
 export function extractLink(text: string): string | null {
   if (!text) return null;
@@ -66,40 +77,68 @@ export function extractLink(text: string): string | null {
   const matches = text.match(urlRegex);
   if (!matches) return null;
 
-  // Scoring system to find the "best" link.
+  // High-score keywords that indicate a real verification/auth link.
   const keywords = [
-    { word: 'verify', score: 10 },
-    { word: 'confirm', score: 10 },
-    { word: 'activate', score: 10 },
-    { word: 'magic', score: 8 },
-    { word: 'login', score: 5 },
-    { word: 'auth', score: 5 },
-    { word: 'token', score: 5 },
-    { word: 'session', score: 5 },
-    { word: 'click', score: 3 },
-    { word: 'continue', score: 3 },
+    { word: 'verify',       score: 10 },
+    { word: 'confirm',      score: 10 },
+    { word: 'activate',     score: 10 },
+    { word: 'validation',   score: 9  },
+    { word: 'magic',        score: 8  },
+    { word: 'redirect',     score: 7  },  // e.g. figma.com/email/link_redirect
+    { word: 'link_uuid',    score: 6  },  // Figma's link format
+    { word: 'login',        score: 5  },
+    { word: 'auth',         score: 5  },
+    { word: 'token',        score: 5  },
+    { word: 'session',      score: 5  },
+    { word: 'continue',     score: 3  },
+    { word: 'click',        score: 1  },  // was 3 — trackers abuse this word
   ];
 
+  // Completely skip static assets and noise.
   const ignoreList = [
-    'unsubscribe', 'policy', 'terms', 'privacy', 'help', 'support', 'contact', 
-    '.png', '.jpg', '.jpeg', '.gif', 'w3.org', 'schema.org'
+    'unsubscribe', 'policy', 'terms', 'privacy', 'help', 'support', 'contact',
+    '.png', '.jpg', '.jpeg', '.gif', 'w3.org', 'schema.org',
   ];
+
+  // Click-tracker patterns that only work when clicked from within an email client.
+  // These are put in a SEPARATE fallback bucket — only used if zero real links found.
+  // Examples: Mailchimp SafeLinks, Sendgrid click tracker, Iterable, etc.
+  const trackerPatterns = [
+    '/wf/open',          // Mailchimp / Iterable click tracker endpoint
+    'click.', '//click.',
+    'track.', '//track.',
+    'links.', '//links.',
+    'mailchi.mp',
+    'sendgrid.net',
+    'mandrillapp.com',
+    'list-manage.com',
+    'email.', '//email.',  // e.g. email.service.com/tracker
+  ];
+
+  const isTracker = (url: string): boolean => {
+    const lower = url.toLowerCase();
+    return trackerPatterns.some(p => lower.includes(p));
+  };
 
   let bestLink: string | null = null;
   let highestScore = 0;
-  
-  // Keep track of valid links in case we need a fallback
-  const validLinks: string[] = [];
+  const validLinks: string[]  = [];   // non-tracker, non-noise links
+  const trackerLinks: string[] = [];  // tracker links (fallback only)
 
   for (const url of matches) {
-    let score = 0;
     const lowerUrl = url.toLowerCase();
 
-    // Skip obviously wrong or static asset links.
-    if (ignoreList.some(ignore => lowerUrl.includes(ignore))) continue;
-    
+    // Skip static assets and noise entirely.
+    if (ignoreList.some(ig => lowerUrl.includes(ig))) continue;
+
+    if (isTracker(url)) {
+      trackerLinks.push(url);
+      continue; // Don't score trackers in the main loop.
+    }
+
     validLinks.push(url);
 
+    let score = 0;
     for (const { word, score: points } of keywords) {
       if (lowerUrl.includes(word)) score += points;
     }
@@ -110,13 +149,22 @@ export function extractLink(text: string): string | null {
     }
   }
 
-  // If no keywords matched, but we have valid links, 
-  // return the longest one (verification links with tokens are typically very long).
-  if (highestScore === 0 && validLinks.length > 0) {
-    return validLinks.reduce((longest, current) => 
-      current.length > longest.length ? current : longest
+  // If a scored real link was found, return it.
+  if (bestLink) return bestLink;
+
+  // No scored match — return the shortest valid non-tracker link.
+  // (Shorter = more likely to be a clean redirect url, not a base64 blob)
+  if (validLinks.length > 0) {
+    return validLinks.reduce((shortest, cur) =>
+      cur.length < shortest.length ? cur : shortest
     );
   }
 
-  return bestLink;
+  // Last resort: a tracker link (user can still tap ⚡ Verify in the popup).
+  if (trackerLinks.length > 0) {
+    return trackerLinks[0];
+  }
+
+  return null;
 }
+

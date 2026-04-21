@@ -23,7 +23,7 @@
 import md5 from 'md5';
 import { generateIdentity } from '../shared/identity';
 import { extractOTP, extractLink } from '../shared/otp-extractor';
-import { getApiKey, getSession, setSession, addToHistory, updateHistoryEntry, getHistory } from '../shared/storage';
+import { getApiKey, getSession, setSession, addToHistory, updateHistoryEntry, getHistory, getAutoVerify } from '../shared/storage';
 import type { ContentToWorkerMessage, WorkerToContentMessage } from '../shared/messages';
 
 // ─── constants ────────────────────────────────────────────────────────────────
@@ -70,8 +70,8 @@ let identityInFlight = false;
 
 async function sendToTab(tabId: number, message: WorkerToContentMessage): Promise<void> {
   try {
-    await chrome.tabs.sendMessage(tabId, message);
-  } catch {
+    await chrome.tabs.sendMessage(tabId, message).catch(() => {});
+  } catch (error) {
     // Tab closed or navigated — silent failure.
   }
 }
@@ -210,9 +210,44 @@ async function pollOnce(): Promise<void> {
       }
 
       if (link && !otp) {
-        // Auto-open magic link in a new foreground tab.
-        await chrome.tabs.create({ url: link, active: true });
-        await sendToTab(tabId, { type: 'OTP_FOUND', payload: { code: 'Magic Link' } });
+        console.log('[FlashFill] Verification link found — trying background tab first:', link);
+
+        // Step 1: Attempt silent background verification (if user hasn\'t disabled it).
+        let bgTabId: number | undefined;
+        const autoVerify = await getAutoVerify();
+
+        if (autoVerify) {
+          try {
+            const bgTab = await chrome.tabs.create({ url: link, active: false });
+            bgTabId = bgTab.id;
+          } catch (e) {
+            console.warn('[FlashFill] Failed to open background tab:', e);
+          }
+        }
+
+        // Step 2: Toast the user immediately.
+        await sendToTab(tabId, {
+          type: 'SHOW_TOAST',
+          payload: {
+            message: autoVerify
+              ? '⚡ Verification link opened! Try refreshing this page.'
+              : '✉️ Verification email arrived! Open FlashFill → tap ⚡ Verify.',
+          },
+        });
+
+        // Step 3: After 6s, clean up bg tab + send fallback hint (only if auto-verify was on).
+        if (autoVerify) {
+          setTimeout(async () => {
+            if (bgTabId !== undefined) {
+              try { await chrome.tabs.remove(bgTabId); } catch { /* already closed */ }
+            }
+            sendToTab(tabId, {
+              type: 'SHOW_TOAST',
+              payload: { message: '🔗 Still not verified? Open FlashFill → tap ⚡ Verify.' },
+            }).catch(() => {});
+          }, 6000);
+        }
+
       } else {
         // If we found an OTP, we trigger the autofill in the tab.
         // We also send the link (if any) so the content script can optionally fallback if no input field is found.
@@ -398,7 +433,18 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 chrome.runtime.onMessage.addListener(
   (message: ContentToWorkerMessage, sender: chrome.runtime.MessageSender) => {
     const tabId = sender.tab?.id;
-    console.log('[FlashFill] Worker received message:', message.type, 'from tab', tabId);
+    console.log('[FlashFill] Worker received message:', message.type, 'from tab', tabId ?? 'popup');
+
+    // REQUEST_IDENTITY can legitimately come from the popup (↻ New button),
+    // in which case sender.tab is undefined. Look up the active tab instead.
+    if (message.type === 'REQUEST_IDENTITY' && tabId === undefined) {
+      void chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+        if (tab?.id) void handleRequestIdentity(message.payload.url, tab.id);
+      });
+      return;
+    }
+
+    // All other messages must originate from a content script (have a tab).
     if (tabId === undefined) return;
 
     switch (message.type) {

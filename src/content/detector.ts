@@ -1,3 +1,4 @@
+
 /*
  * FORM DETECTOR — Content Script
  *
@@ -83,7 +84,7 @@ function nearbyTextSignals(scope: Element): string {
 
   // Also check page-level headings if scope is a small form.
   if (scope !== document.documentElement) {
-    document.querySelectorAll('h1, h2').forEach((h) =>
+    deepQuerySelectorAll('h1, h2').forEach((h) =>
       parts.push(normalise(h.textContent)),
     );
   }
@@ -143,6 +144,22 @@ export function containerQualifies(container: Element): boolean {
 }
 
 /**
+ * Recursively find all elements matching a selector, traversing open Shadow DOMs.
+ */
+function deepQuerySelectorAll(selector: string, root: Document | Element | ShadowRoot = document): Element[] {
+  const elements = Array.from(root.querySelectorAll(selector));
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  let currentNode = walker.nextNode();
+  while (currentNode) {
+    if (currentNode instanceof Element && currentNode.shadowRoot) {
+      elements.push(...deepQuerySelectorAll(selector, currentNode.shadowRoot));
+    }
+    currentNode = walker.nextNode();
+  }
+  return elements;
+}
+
+/**
  * Scan the DOM for the first email input inside a form (or form-like container)
  * that looks like a signup / registration form.
  * Returns `null` when no eligible field exists.
@@ -153,9 +170,9 @@ export function containerQualifies(container: Element): boolean {
  *    section, [role="form"], or parent container)
  */
 export function detectEmailField(): HTMLInputElement | null {
-  const inputs = document.querySelectorAll<HTMLInputElement>('input');
+  const inputs = deepQuerySelectorAll('input') as HTMLInputElement[];
 
-  for (const input of Array.from(inputs)) {
+  for (const input of inputs) {
     if (!looksLikeEmailInput(input)) continue;
 
     // Try a real <form> first.
@@ -164,12 +181,14 @@ export function detectEmailField(): HTMLInputElement | null {
 
     // Fallback: check logical containers for SPA / formless layouts.
     const container = input.closest<Element>(
-      '[role="form"], section, [data-testid], main, .card, .modal, [class*="form"], [class*="signup"], [class*="register"]',
+      '[role="form"], section, [data-testid], main, .card, .modal, [class*="form"], [class*="signup"], [class*="register"], [part="form"]',
     );
     if (container && containerQualifies(container)) return input;
 
     // Last resort: check the page-level context (headings on the page).
-    if (form && containerQualifies(document.documentElement)) return input;
+    // Note: This explicitly DOES NOT check `if (form)` because many SPAs omit the <form> tag entirely,
+    // and we still want to evaluate the document.documentElement for 'Sign Up' headers.
+    if (containerQualifies(document.documentElement)) return input;
   }
 
   return null;
@@ -187,15 +206,55 @@ export function announceEmailField(field: HTMLInputElement): void {
   document.dispatchEvent(event);
 }
 
-function runInitialDetection(): void {
+let detectorObserver: MutationObserver | null = null;
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let safetyTimer: ReturnType<typeof setTimeout> | null = null;
+
+function runDetection(): boolean {
   const field = detectEmailField();
-  if (field) announceEmailField(field);
+  if (field) {
+    if (detectorObserver) {
+      detectorObserver.disconnect();
+      detectorObserver = null;
+    }
+    if (safetyTimer) {
+      clearTimeout(safetyTimer);
+      safetyTimer = null;
+    }
+    announceEmailField(field);
+    return true;
+  }
+  return false;
+}
+
+function startPersistentDetection(): void {
+  // Run immediately once
+  if (runDetection()) return; // already found
+
+  // Set up observer for SPAs
+  detectorObserver = new MutationObserver(() => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      runDetection();
+    }, 150);
+  });
+
+  detectorObserver.observe(document.body, { childList: true, subtree: true });
+
+  // Safety disconnect after 30 seconds
+  safetyTimer = setTimeout(() => {
+    if (detectorObserver) {
+      detectorObserver.disconnect();
+      detectorObserver = null;
+      console.log('[FlashFill] Detector timed out after 30s without finding an email field.');
+    }
+  }, 30000);
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', runInitialDetection, { once: true });
+  document.addEventListener('DOMContentLoaded', startPersistentDetection, { once: true });
 } else {
-  runInitialDetection();
+  startPersistentDetection();
 }
 
 export const EMAIL_FIELD_FOUND = EMAIL_FIELD_FOUND_EVENT;

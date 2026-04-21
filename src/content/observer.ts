@@ -39,8 +39,11 @@ function sendToWorker(message: ContentToWorkerMessage): void {
   // chrome.runtime may be undefined in rare contexts (e.g. extension reload).
   if (typeof chrome === 'undefined' || !chrome.runtime?.id) return;
   try {
-    chrome.runtime.sendMessage(message);
-  } catch {
+    const promise = chrome.runtime.sendMessage(message);
+    if (promise && typeof promise.catch === 'function') {
+      promise.catch(() => {});
+    }
+  } catch (error) {
     // Swallow — silent failure per PRD "no user-facing errors".
   }
 }

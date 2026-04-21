@@ -1,410 +1,159 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8" />
   <title>FlashFill</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --accent: #0a84ff;
-      --accent-glow: rgba(10, 132, 255, 0.4);
-      --success: #32d74b;
-      --text: #ffffff;
-      --text-secondary: rgba(255, 255, 255, 0.6);
-      --glass-bg: rgba(255, 255, 255, 0.06);
-      --glass-border: rgba(255, 255, 255, 0.12);
-      --glass-highlight: rgba(255, 255, 255, 0.05);
-      --radius-lg: 20px;
-      --radius-md: 14px;
-    }
-
-    * {
-      box-sizing: border-box;
-      -webkit-font-smoothing: antialiased;
-    }
-
-    body {
-      margin: 0;
-      padding: 0;
-      width: 320px;
-      min-height: 400px;
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      background-color: #000000;
-      color: var(--text);
-      overflow-x: hidden;
-      position: relative;
-    }
-
-    /* Ambient Background Glows */
-    body::before,
-    body::after {
-      content: '';
-      position: fixed;
-      width: 250px;
-      height: 250px;
-      border-radius: 50%;
-      filter: blur(80px);
-      z-index: -1;
-      opacity: 0.6;
-      animation: pulseGlow 8s ease-in-out infinite alternate;
-    }
-
-    body::before {
-      top: -50px;
-      left: -50px;
-      background: radial-gradient(circle, #5e5ce6 0%, transparent 70%);
-    }
-
-    body::after {
-      bottom: -100px;
-      right: -50px;
-      background: radial-gradient(circle, #0a84ff 0%, transparent 70%);
-      animation-delay: -4s;
-    }
-
-    @keyframes pulseGlow {
-      0% {
-        transform: scale(0.8) translate(0, 0);
-        opacity: 0.4;
-      }
-
-      100% {
-        transform: scale(1.2) translate(20px, 20px);
-        opacity: 0.7;
-      }
-    }
-
-    .container {
-      padding: 24px 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 24px;
-      position: relative;
-      z-index: 1;
-    }
-
-    /* Header Style */
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .logo {
-      width: 36px;
-      height: 36px;
-      background: linear-gradient(135deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.01));
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border: 1px solid var(--glass-border);
-      border-radius: 12px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.2);
-    }
-
-    h1 {
-      margin: 0;
-      font-size: 20px;
-      font-weight: 700;
-      letter-spacing: -0.6px;
-      background: linear-gradient(180deg, #ffffff 0%, rgba(255, 255, 255, 0.7) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    /* Section Management */
-    .section {
-      display: none;
-    }
-
-    .section.active {
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-      animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    @keyframes slideUp {
-      from {
-        opacity: 0;
-        transform: translateY(16px);
-        filter: blur(4px);
-      }
-
-      to {
-        opacity: 1;
-        transform: translateY(0);
-        filter: blur(0);
-      }
-    }
-
-    /* Glassmorphism Cards */
-    .glass-card {
-      background: var(--glass-bg);
-      backdrop-filter: blur(24px) saturate(180%);
-      -webkit-backdrop-filter: blur(24px) saturate(180%);
-      border-radius: var(--radius-lg);
-      padding: 20px;
-      border: 1px solid var(--glass-border);
-      box-shadow: 0 16px 32px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1);
-    }
-
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--success);
-      font-size: 12px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      background: rgba(50, 215, 75, 0.12);
-      padding: 6px 12px;
-      border-radius: 20px;
-      border: 1px solid rgba(50, 215, 75, 0.2);
-      align-self: flex-start;
-    }
-
-    .status-dot {
-      width: 6px;
-      height: 6px;
-      background: var(--success);
-      border-radius: 50%;
-      box-shadow: 0 0 10px var(--success);
-    }
-
-    h2 {
-      margin: 0;
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text-secondary);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    /* Inputs & Buttons */
-    .input-group {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    input[type="password"] {
-      width: 100%;
-      padding: 14px 16px;
-      background: rgba(0, 0, 0, 0.4);
-      border: 1px solid var(--glass-border);
-      color: #ffffff;
-      border-radius: 12px;
-      font-size: 15px;
-      outline: none;
-      box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
-      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    input[type="password"]::placeholder {
-      color: rgba(255, 255, 255, 0.3);
-    }
-
-    input[type="password"]:focus {
-      border-color: rgba(10, 132, 255, 0.6);
-      background: rgba(0, 0, 0, 0.6);
-      box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.15), inset 0 2px 4px rgba(0, 0, 0, 0.3);
-    }
-
-    button {
-      width: 100%;
-      padding: 14px;
-      background: #ffffff;
-      color: #000000;
-      border: none;
-      border-radius: 12px;
-      font-size: 15px;
-      font-weight: 600;
-      letter-spacing: -0.2px;
-      cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-      box-shadow: 0 4px 12px rgba(255, 255, 255, 0.2);
-    }
-
-    button:hover {
-      transform: scale(1.02);
-      box-shadow: 0 6px 16px rgba(255, 255, 255, 0.3);
-    }
-
-    button:active {
-      transform: scale(0.98);
-    }
-
-    button.secondary {
-      background: var(--glass-bg);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      color: var(--text);
-      border: 1px solid var(--glass-border);
-      box-shadow: none;
-      margin-top: 4px;
-    }
-
-    button.secondary:hover {
-      background: var(--glass-highlight);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-    }
-
-    /* History List */
-    .history-container {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    ul {
-      list-style: none;
-      padding: 0;
-      margin: 0;
-    }
-
-    .history-item {
-      background: rgba(255, 255, 255, 0.03);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border-radius: var(--radius-md);
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      transition: all 0.2s ease;
-      cursor: pointer;
-    }
-
-    .history-item:hover {
-      background: rgba(255, 255, 255, 0.08);
-      border-color: rgba(255, 255, 255, 0.15);
-      transform: translateY(-1px);
-    }
-
-    .history-item .email {
-      color: #ffffff;
-      font-weight: 600;
-      font-size: 15px;
-      letter-spacing: -0.2px;
-    }
-
-    .history-item .url {
-      color: var(--text-secondary);
-      font-size: 13px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .history-item .footer {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-top: 6px;
-      padding-top: 6px;
-      border-top: 1px solid rgba(255, 255, 255, 0.05);
-    }
-
-    .history-item .date {
-      color: rgba(255, 255, 255, 0.4);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .info-text {
-      font-size: 12px;
-      color: var(--text-secondary);
-      margin: 0;
-      line-height: 1.5;
-      text-align: center;
-    }
-  </style>
+  <link rel="stylesheet" href="./popup.css" />
 </head>
-
 <body>
-  <div class="container">
-    <header>
-      <div class="brand">
-        <div class="logo">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
-          </svg>
-        </div>
-        <h1>FlashFill</h1>
-      </div>
-    </header>
-
-    <div id="setup-section" class="section active">
-      <div class="glass-card">
-        <h2 style="margin-bottom: 16px;">Configuration</h2>
-        <div class="input-group">
-          <input id="api-key-input" type="password" placeholder="RapidAPI Key" />
-          <button id="save-key-btn">Get Started</button>
-        </div>
-      </div>
-      <p class="info-text">
-        Protected by Privatix Temp Mail.<br>Paste your API key to automate.
-      </p>
+  <!-- ═══ Header ═══ -->
+  <div class="header">
+    <div class="brand">
+      <img src="../../icons/icon.png" width="22" height="22" alt="FlashFill Logo" />
+      <h1>FlashFill</h1>
     </div>
+    <div class="header-actions">
+      <button id="new-identity-btn" class="btn btn-accent btn-sm" title="Generate new identity">
+        <svg class="rotate-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+          <path d="M3 3v5h5"/>
+        </svg>
+        New
+      </button>
+    </div>
+  </div>
 
-    <!-- UI Fallback for intercepted Magic Link -->
-    <div id="link-fallback-section" class="section">
-      <div class="glass-card" style="border-color: rgba(10, 132, 255, 0.4); background: rgba(10, 132, 255, 0.1);">
-        <h2 style="color: #ffffff; text-align: center; margin-bottom: 12px; font-size: 14px;">Incoming Action Required</h2>
-        <p class="info-text" style="margin-bottom: 16px; color: #fff;">A verification link was intercepted.</p>
-        <button id="open-link-btn" style="background: var(--accent); color: white; padding: 16px; font-size: 16px; box-shadow: 0 4px 16px rgba(10, 132, 255, 0.3);">Open Verification Link!</button>
+  <!-- ═══ Setup Section (no API key) ═══ -->
+  <div id="setup-section" class="section">
+    <div class="card glass-card">
+      <div class="card-header">
+        <h2>Configuration</h2>
+      </div>
+      <div class="card-content">
+        <p class="muted">Paste your Privatix API Key to get started.</p>
+        <input id="api-key-input" class="input" type="password" placeholder="RapidAPI Key" />
+        <button id="save-key-btn" class="btn btn-primary">Connect</button>
       </div>
     </div>
+  </div>
 
-    <div id="active-section" class="section">
-      <div class="status-badge">
-        <div class="status-dot"></div>
-        Secured Connection
+  <!-- ═══ Active Section (has API key) ═══ -->
+  <div id="active-section" class="section">
+    <!-- Status Banner -->
+    <div class="status-banner">
+      <div class="status-dot"></div>
+      <span>Autonomous Mode Active</span>
+      <span id="identity-age" class="identity-age"></span>
+    </div>
+
+    <!-- Identity Card -->
+    <div class="card glass-card">
+      <div class="card-header">
+        <h2>Burner Identity</h2>
       </div>
-
-      <div
-        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; margin-top: 8px;">
-        <h2>Recent Emails</h2>
+      <div class="card-content identity-grid">
+        <div class="kv-row">
+          <span class="kv-label">Email</span>
+          <div class="kv-value-container">
+            <span id="id-email" class="kv-value">—</span>
+            <button class="btn-copy copy-btn" data-copy="email" title="Copy Email">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="kv-row">
+          <span class="kv-label">Password</span>
+          <div class="kv-value-container">
+            <span id="id-password" class="kv-value kv-masked">—</span>
+            <button id="toggle-password-btn" class="btn-copy" title="Toggle visibility">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+            <button class="btn-copy copy-btn" data-copy="password" title="Copy Password">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="kv-row">
+          <span class="kv-label">First Name</span>
+          <div class="kv-value-container">
+            <span id="id-firstname" class="kv-value">—</span>
+            <button class="btn-copy copy-btn" data-copy="firstname" title="Copy">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="kv-row">
+          <span class="kv-label">Last Name</span>
+          <div class="kv-value-container">
+            <span id="id-lastname" class="kv-value">—</span>
+            <button class="btn-copy copy-btn" data-copy="lastname" title="Copy">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="kv-row">
+          <span class="kv-label">Username</span>
+          <div class="kv-value-container">
+            <span id="id-username" class="kv-value">—</span>
+            <button class="btn-copy copy-btn" data-copy="username" title="Copy">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="kv-row">
+          <span class="kv-label">Phone</span>
+          <div class="kv-value-container">
+            <span id="id-phone" class="kv-value">—</span>
+            <button class="btn-copy copy-btn" data-copy="phone" title="Copy">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            </button>
+          </div>
+        </div>
       </div>
+    </div>
 
-      <ul id="history-list" class="history-container">
-        <li class="history-item">
-          <span class="email">fake.email1@privatix.com</span>
-          <span class="url">netflix.com</span>
-          <div class="footer">
-            <span class="date">Just now</span>
+    <!-- Inbox Card -->
+    <div class="card glass-card">
+      <div class="card-header inbox-header">
+        <h2>Inbox</h2>
+        <div class="inbox-header-actions">
+          <div class="toggle-row" title="Auto-open verification link in background tab">
+            <span class="toggle-label">Auto-verify</span>
+            <button id="auto-verify-toggle" class="toggle-pill" aria-pressed="true">
+              <span class="toggle-thumb"></span>
+            </button>
           </div>
-        </li>
-        <li class="history-item">
-          <span class="email">temp.user99@privatix.com</span>
-          <span class="url">spotify.com</span>
-          <div class="footer">
-            <span class="date">10 mins ago</span>
-          </div>
-        </li>
-      </ul>
+          <button id="refresh-inbox-btn" class="btn-copy" title="Refresh Inbox">
+            <svg class="rotate-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+          </button>
+        </div>
+      </div>
+      <div id="inbox-list" class="inbox-list">
+        <div class="inbox-empty">Loading messages...</div>
+      </div>
+    </div>
+  </div>
 
-      <button id="clear-session-btn" class="secondary">Reset Session</button>
+  <!-- ═══ Message Detail Overlay ═══ -->
+  <div id="message-view">
+    <div class="message-header">
+      <button id="back-to-inbox-btn" class="btn-back" title="Back">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+      </button>
+      <h2>Message Details</h2>
+    </div>
+    <div class="message-meta">
+      <div id="msg-subject" class="message-meta-subject">Subject</div>
+      <div id="msg-from" class="message-meta-from">From: sender@example.com</div>
+    </div>
+    <div id="msg-body" class="message-content">
+      <!-- Injected HTML Content -->
     </div>
   </div>
 
   <script type="module" src="./popup.ts"></script>
 </body>
-
 </html>
