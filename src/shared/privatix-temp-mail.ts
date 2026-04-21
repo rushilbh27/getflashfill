@@ -57,6 +57,21 @@ export class TempMailClient {
   }
 
   /**
+   * Fetch a list of available domains from the Privatix API.
+   */
+  async getAvailableDomains(): Promise<string[]> {
+    const res = await fetch(`${API_BASE}/request/domains/`, {
+      method:  'GET',
+      headers: this.headers,
+    });
+
+    if (res.status === 429) throw new Error('API Rate limit exceeded (429)');
+    if (!res.ok)            throw new Error(`Domains fetch failed: ${res.status}`);
+    
+    return res.json() as Promise<string[]>;
+  }
+
+  /**
    * Fetch all messages for the given email address.
    * Returns an empty array when no messages exist yet.
    */
