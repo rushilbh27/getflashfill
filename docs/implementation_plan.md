@@ -16,7 +16,7 @@ Implement "Silent Verification" — with fallback safety:
 
 > **Why these changes matter:** Many sites bind the session cookie with `SameSite=Strict`, meaning the background tab's session never propagates to the foreground tab. Additionally, most magic links are single-use — if the background tab closes before verification completes (e.g. on a slow connection), the link is consumed and the user is locked out with no recourse. The polling check and success-conditional close together prevent this silent failure class.
 
-#### [MODIFY] worker.ts(file:///Users/rushilbhor/claude code/flashfill/src/background/worker.ts)
+#### [MODIFY] worker.ts
 - Add `isTabPolling(tabId)` helper that inspects recent XHR/fetch activity from the tab.
 - Update `pollOnce()` where `otp == null && link != null`:
   - If `isTabPolling()` returns false → fall back to `chrome.tabs.create({ url: link, active: true })` (original behavior).
@@ -35,7 +35,7 @@ Implement "Persistent SPA Detection" — with debouncing and a maximum observati
 - **Set a maximum observation window** (e.g. 30 seconds): if no email field is found after 30 seconds of observation, `observer.disconnect()` unconditionally to prevent zombie observers persisting on pages that never load an email field.
 - On successful payload detection, invoke `observer.disconnect()` immediately as before.
 
-#### [MODIFY] detector.ts(file:///Users/rushilbhor/claude code/flashfill/src/content/detector.ts)
+#### [MODIFY] detector.ts
 - Add `MutationObserver` with `{ childList: true, subtree: true }`.
 - Wrap the observer callback in a debounce utility (150ms).
 - Add a `setTimeout(() => observer.disconnect(), 30000)` safety disconnect.
@@ -50,7 +50,7 @@ Fix "Fade-in / Animation Misses" — with cascade de-duplication:
 - **Critical fix**: Add a boolean guard flag (`let isFilling = false`) that is set before the cascade starts and cleared after the final attempt completes. If a new DOM mutation fires while a cascade is already in progress, skip queuing a second cascade entirely. This prevents multiple overlapping cascades from running simultaneously (which occurs frequently in SPAs with rapid DOM mutations), avoiding duplicate field fills and redundant event dispatching.
 - Verify that `tryFillNewFields` is idempotent (i.e. safe to call multiple times on already-filled fields). If it isn't, add a per-field filled-state check before writing values.
 
-#### [MODIFY] injector.ts(file:///Users/rushilbhor/claude code/flashfill/src/content/injector.ts)
+#### [MODIFY] injector.ts
 - Add `let isFilling = false` guard above `startFieldWatcher()`.
 - Update `startFieldWatcher()` mutation callback:
   - If `isFilling` is true → return early, skip cascade.
