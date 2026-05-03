@@ -1,8 +1,5 @@
 /**
- * POPUP CONTROLLER — FlashFill
- *
- * Renders identity details, live inbox, handles ↻ New identity rotation,
- * password reveal toggle, copy-to-clipboard, and message reading.
+ * POPUP CONTROLLER — FlashFill (RapidAPI Edition)
  *
  * Data flow:
  *   - Identity comes from chrome.storage.local (set by the service worker)
@@ -10,7 +7,7 @@
  *   - Session is lazily refreshed every time the popup opens
  */
 
-import { getApiKey, setApiKey, clearSession, getSession, getAutoVerify, setAutoVerify } from '../shared/storage';
+import { getApiKey, setApiKey, clearSession, getSession, getHistory, getAutoVerify, setAutoVerify } from '../shared/storage';
 import { TempMailClient, type TempMailMessage } from '../shared/privatix-temp-mail';
 import { extractLink, extractOTP } from '../shared/otp-extractor';
 import type { SessionData } from '../shared/types';
@@ -24,8 +21,13 @@ let currentAddress = '';
 let isFetching = false;
 let passwordVisible = false;
 let currentSession: SessionData | null = null;
+let isPaused = false;
 
-// ── DOM refs (resolved once) ──
+// Identity navigator state
+let identityEntries: Array<{ email: string; password?: string; firstName?: string; lastName?: string; username?: string; phone?: string }> = [];
+let identityIndex = 0;
+
+// ── DOM refs ──
 
 const $ = (id: string) => document.getElementById(id);
 
@@ -44,24 +46,34 @@ async function render(): Promise<void> {
   const apiKey = await getApiKey();
   const setupSection = $('setup-section');
   const activeSection = $('active-section');
+  const headerActions = $('header-actions');
 
   if (!setupSection || !activeSection) return;
 
   if (!apiKey) {
     setupSection.classList.add('active');
     activeSection.classList.remove('active');
+    if (headerActions) headerActions.style.display = 'none';
     return;
   }
 
   setupSection.classList.remove('active');
   activeSection.classList.add('active');
+  if (headerActions) headerActions.style.display = 'flex';
 
   mailClient = new TempMailClient(apiKey);
 
-  // Load and apply the auto-verify toggle state.
   const autoVerify = await getAutoVerify();
   const toggleBtn = $('auto-verify-toggle');
   if (toggleBtn) toggleBtn.setAttribute('aria-pressed', String(autoVerify));
+
+  // Load pause state
+  const pauseResult = await chrome.storage.local.get('isPaused');
+  isPaused = (pauseResult.isPaused as boolean | undefined) ?? false;
+  updatePauseUI();
+
+  // Build identity navigator from current session + history
+  await buildIdentityEntries();
 
   const session = await getSession();
   currentSession = session;
@@ -69,26 +81,7 @@ async function render(): Promise<void> {
   if (session && session.identity) {
     const id = session.identity;
     currentAddress = session.email;
-
-    setField('id-email', session.email);
-    setPasswordField(id.password);
-    setField('id-firstname', id.firstName);
-    setField('id-lastname', id.lastName);
-    setField('id-username', id.username);
-    setField('id-phone', id.phone || '—');
-
-    // Copy buttons
-    setupCopyButton('email', session.email);
-    setupCopyButton('password', id.password);
-    setupCopyButton('firstname', id.firstName);
-    setupCopyButton('lastname', id.lastName);
-    setupCopyButton('username', id.username);
-    setupCopyButton('phone', id.phone || '');
-
-    // Age badge
     renderIdentityAge(session.createdAt);
-
-    // Inbox
     await fetchInbox();
   } else {
     currentAddress = '';
@@ -97,6 +90,96 @@ async function render(): Promise<void> {
     if (inboxList) {
       inboxList.innerHTML = '<div class="inbox-empty">Open a signup page to begin</div>';
     }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// IDENTITY NAVIGATOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function buildIdentityEntries(): Promise<void> {
+  const session = await getSession();
+  const history = await getHistory();
+
+  identityEntries = [];
+  identityIndex = 0;
+
+  if (session?.identity) {
+    identityEntries.push({
+      email: session.email,
+      password: session.identity.password,
+      firstName: session.identity.firstName,
+      lastName: session.identity.lastName,
+      username: session.identity.username,
+      phone: session.identity.phone,
+    });
+  }
+
+  for (const h of history) {
+    if (!identityEntries.find(e => e.email === h.email)) {
+      identityEntries.push({ email: h.email });
+    }
+  }
+
+  renderCurrentIdentity();
+}
+
+function renderCurrentIdentity(): void {
+  const entry = identityEntries[identityIndex];
+  if (!entry) return;
+
+  currentAddress = entry.email;
+  setField('id-email', entry.email);
+  setField('id-firstname', entry.firstName ?? '—');
+  setField('id-lastname', entry.lastName ?? '—');
+  setField('id-username', entry.username ?? '—');
+  setField('id-phone', entry.phone ?? '—');
+
+  if (passwordVisible) {
+    setField('id-password', entry.password ?? '—');
+  } else {
+    setField('id-password', '••••••••');
+  }
+
+  setupCopyButton('email', entry.email);
+  setupCopyButton('password', entry.password ?? '');
+  setupCopyButton('firstname', entry.firstName ?? '');
+  setupCopyButton('lastname', entry.lastName ?? '');
+  setupCopyButton('username', entry.username ?? '');
+  setupCopyButton('phone', entry.phone ?? '');
+
+  // Update navigator UI
+  const indexEl = $('identity-index');
+  if (indexEl) {
+    indexEl.textContent = identityEntries.length > 0
+      ? `${identityIndex + 1}/${identityEntries.length}`
+      : '1/1';
+  }
+
+  const prevBtn = $('prev-identity-btn') as HTMLButtonElement | null;
+  const nextBtn = $('next-identity-btn') as HTMLButtonElement | null;
+  if (prevBtn) prevBtn.disabled = identityIndex === 0;
+  if (nextBtn) nextBtn.disabled = identityIndex >= identityEntries.length - 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAUSE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function updatePauseUI(): void {
+  const pauseBtn = $('pause-btn');
+  if (!pauseBtn) return;
+
+  if (isPaused) {
+    pauseBtn.title = 'Resume';
+    pauseBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+    pauseBtn.classList.add('nb-button-black');
+    pauseBtn.classList.remove('nb-button-white');
+  } else {
+    pauseBtn.title = 'Pause';
+    pauseBtn.innerHTML = `<svg class="pause-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+    pauseBtn.classList.remove('nb-button-black');
+    pauseBtn.classList.add('nb-button-white');
   }
 }
 
@@ -113,7 +196,6 @@ function renderIdentityAge(createdAt: number): void {
   const remainMs = SESSION_TTL_MS - ageMs;
 
   if (remainMs <= 0) {
-    // Already expired — auto-rotate: request a fresh identity for the active tab.
     ageEl.textContent = 'Expired — rotating…';
     ageEl.style.color = 'var(--ff-warn)';
     void autoRotateIdentity();
@@ -125,8 +207,7 @@ function renderIdentityAge(createdAt: number): void {
   const remainHours = Math.floor(remainMs / 3_600_000);
 
   if (remainMs < 86_400_000) {
-    // Less than 1 day left — amber warning
-    ageEl.textContent = remainHours < 1 ? '⚡ Expiring soon — tap ↻ New' : `⚡ Expires in ${remainHours}h — tap ↻ New`;
+    ageEl.textContent = remainHours < 1 ? '⚡ Expiring soon' : `⚡ Expires in ${remainHours}h`;
     ageEl.style.color = 'var(--ff-warn)';
     if (banner) {
       banner.style.background = 'var(--ff-warn-dim)';
@@ -151,25 +232,7 @@ async function autoRotateIdentity(): Promise<void> {
       });
     }
   } catch { /* silent */ }
-  // Re-render after the worker has had time to save the new session.
   setTimeout(() => void render(), 1800);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// PASSWORD TOGGLE
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function setPasswordField(password: string): void {
-  const el = $('id-password');
-  if (!el) return;
-
-  if (passwordVisible) {
-    el.textContent = password;
-    el.classList.remove('kv-masked');
-  } else {
-    el.textContent = '••••••••••';
-    el.classList.add('kv-masked');
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -189,15 +252,14 @@ function setupCopyButton(type: string, value: string): void {
   const btn = document.querySelector(`button.copy-btn[data-copy="${type}"]`);
   if (!btn) return;
 
-  // Clone to remove leftover listeners.
   const newBtn = btn.cloneNode(true) as HTMLButtonElement;
   btn.parentNode?.replaceChild(newBtn, btn);
 
   newBtn.addEventListener('click', async () => {
+    if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
       newBtn.classList.add('copy-success');
-      // Swap icon to checkmark briefly.
       const origHTML = newBtn.innerHTML;
       newBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ff-success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
       setTimeout(() => {
@@ -222,7 +284,7 @@ async function fetchInbox(): Promise<void> {
 
   isFetching = true;
   const refreshBtn = $('refresh-inbox-btn');
-  if (refreshBtn) refreshBtn.closest('button')?.classList.add('spinning');
+  if (refreshBtn) refreshBtn.classList.add('spinning');
 
   try {
     const messages = await mailClient.getMessages(currentAddress);
@@ -237,7 +299,6 @@ async function fetchInbox(): Promise<void> {
       const item = document.createElement('div');
       item.className = 'inbox-item';
 
-      // Extract OTP code and verification link from this email.
       const otpCode = extractOTP(`${msg.subject} ${msg.bodyText} ${msg.bodyHtml}`);
       const verificationLink = extractVerificationLink(msg);
 
@@ -245,7 +306,6 @@ async function fetchInbox(): Promise<void> {
       subject.className = 'inbox-item-subject';
       subject.textContent = msg.subject || '(No Subject)';
 
-      // OTP badge when we found a code
       if (otpCode) {
         const badge = document.createElement('span');
         badge.className = 'inbox-item-badge';
@@ -270,9 +330,7 @@ async function fetchInbox(): Promise<void> {
       item.appendChild(subject);
       item.appendChild(meta);
 
-      // Action row — OTP Copy button takes priority over Verify Link button.
       if (otpCode) {
-        // Show "Copy Code" button so user can manually paste if injection failed.
         const copyRow = document.createElement('div');
         copyRow.className = 'inbox-item-verify-row';
 
@@ -286,7 +344,6 @@ async function fetchInbox(): Promise<void> {
             copyBtn.textContent = '✅ Copied!';
             setTimeout(() => { copyBtn.textContent = `📋 Copy Code: ${otpCode}`; }, 1500);
           } catch {
-            // Fallback: show the raw code as button text for manual copy
             copyBtn.textContent = `Code: ${otpCode}`;
           }
         });
@@ -294,7 +351,6 @@ async function fetchInbox(): Promise<void> {
         copyRow.appendChild(copyBtn);
         item.appendChild(copyRow);
       } else if (verificationLink) {
-        // No OTP — show Verify Link button.
         const verifyRow = document.createElement('div');
         verifyRow.className = 'inbox-item-verify-row';
 
@@ -304,7 +360,6 @@ async function fetchInbox(): Promise<void> {
         verifyBtn.addEventListener('click', async (e) => {
           e.stopPropagation();
           try {
-            // Navigate the SAME signup tab — cookies travel with it.
             const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
             if (tab?.id) {
               await chrome.tabs.update(tab.id, { url: verificationLink });
@@ -312,7 +367,6 @@ async function fetchInbox(): Promise<void> {
               await chrome.tabs.create({ url: verificationLink, active: true });
             }
           } catch {
-            // Fallback to new tab if update fails.
             chrome.tabs.create({ url: verificationLink, active: true });
           }
           window.close();
@@ -330,22 +384,18 @@ async function fetchInbox(): Promise<void> {
     inboxList.innerHTML = '<div class="inbox-empty" style="color: #ef4444;">Failed to load inbox</div>';
   } finally {
     isFetching = false;
-    if (refreshBtn) refreshBtn.closest('button')?.classList.remove('spinning');
+    if (refreshBtn) refreshBtn.classList.remove('spinning');
   }
 }
 
 function decodeHtmlEntities(str: string): string {
-  // Browsers decode HTML entities when you set .innerHTML on a textarea.
-  // This turns &amp; → &, &#x2F; → /, %20 → %20 etc. so the URL is valid.
   const ta = document.createElement('textarea');
   ta.innerHTML = str;
   return ta.value;
 }
 
 function extractVerificationLink(msg: TempMailMessage): string | null {
-  // Prefer HTML body (richer source) then fall back to plain text.
   const raw = extractLink(msg.bodyHtml) ?? extractLink(msg.bodyText) ?? null;
-  // Decode HTML entities — raw HTML URLs often contain &amp; instead of &.
   return raw ? decodeHtmlEntities(raw) : null;
 }
 
@@ -353,15 +403,13 @@ function formatTime(dateStr: string): string {
   if (!dateStr) return '';
   try {
     const d = new Date(dateStr);
-    const now = Date.now();
-    const diffMs = now - d.getTime();
+    const diffMs = Date.now() - d.getTime();
     const mins = Math.floor(diffMs / 60_000);
     if (mins < 1) return 'now';
     if (mins < 60) return `${mins}m`;
     const hrs = Math.floor(mins / 60);
     if (hrs < 24) return `${hrs}h`;
-    const days = Math.floor(hrs / 24);
-    return `${days}d`;
+    return `${Math.floor(hrs / 24)}d`;
   } catch {
     return '';
   }
@@ -384,12 +432,8 @@ function openMessage(msg: TempMailMessage): void {
 
   if (bodyEl) {
     if (msg.bodyHtml) {
-      bodyEl.innerHTML = DOMPurify.sanitize(msg.bodyHtml, {
-        ADD_ATTR: ['target'], // allow target attr so we can read it
-      });
+      bodyEl.innerHTML = DOMPurify.sanitize(msg.bodyHtml, { ADD_ATTR: ['target'] });
 
-      // Extension CSP blocks <a href> navigation inside the popup.
-      // Intercept every link and route it through chrome.tabs so it actually works.
       bodyEl.querySelectorAll('a[href]').forEach((a) => {
         a.addEventListener('click', async (e) => {
           e.preventDefault();
@@ -414,13 +458,13 @@ function openMessage(msg: TempMailMessage): void {
     }
   }
 
-  view.classList.add('active');
+  view.style.display = 'flex';
 }
 
 function closeMessage(): void {
   const view = $('message-view');
   if (view) {
-    view.classList.remove('active');
+    view.style.display = 'none';
     const body = $('msg-body');
     if (body) body.innerHTML = '';
   }
@@ -436,7 +480,6 @@ async function handleNewIdentity(): Promise<void> {
 
   await clearSession();
 
-  // Ask the worker to generate a fresh identity for the currently active tab.
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id) {
@@ -445,11 +488,8 @@ async function handleNewIdentity(): Promise<void> {
         payload: { url: tab.url || 'https://unknown' },
       });
     }
-  } catch {
-    // Extension context may be invalidated — ignore.
-  }
+  } catch { /* silent */ }
 
-  // Give the worker a moment to persist the new session, then re-render.
   setTimeout(() => {
     if (newBtn) newBtn.classList.remove('spinning');
     void render();
@@ -467,6 +507,12 @@ function attachHandlers(): void {
   const backBtn = $('back-to-inbox-btn');
   const togglePwBtn = $('toggle-password-btn');
   const input = $('api-key-input') as HTMLInputElement | null;
+  const pauseBtn = $('pause-btn');
+  const settingsBtn = $('settings-btn');
+  const changeKeyBtn = $('change-key-btn');
+  const clearSessionBtn = $('clear-session-btn');
+  const prevBtn = $('prev-identity-btn');
+  const nextBtn = $('next-identity-btn');
 
   saveBtn?.addEventListener('click', async () => {
     if (!input) return;
@@ -476,26 +522,66 @@ function attachHandlers(): void {
     window.location.reload();
   });
 
-  newBtn?.addEventListener('click', () => {
-    void handleNewIdentity();
-  });
+  newBtn?.addEventListener('click', () => void handleNewIdentity());
 
-  refreshBtn?.addEventListener('click', () => {
-    void fetchInbox();
-  });
+  refreshBtn?.addEventListener('click', () => void fetchInbox());
 
   backBtn?.addEventListener('click', closeMessage);
 
   togglePwBtn?.addEventListener('click', () => {
     passwordVisible = !passwordVisible;
-    if (currentSession?.identity) {
-      setPasswordField(currentSession.identity.password);
+    const entry = identityEntries[identityIndex];
+    if (entry) {
+      setField('id-password', passwordVisible ? (entry.password ?? '—') : '••••••••');
     }
-    // Swap icon between eye and eye-off.
     if (togglePwBtn) {
-      togglePwBtn.innerHTML = passwordVisible
-        ? '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>'
-        : '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+      togglePwBtn.textContent = passwordVisible ? 'HIDE PASSWORD' : 'SHOW PASSWORD';
+    }
+  });
+
+  pauseBtn?.addEventListener('click', async () => {
+    isPaused = !isPaused;
+    await chrome.storage.local.set({ isPaused });
+    updatePauseUI();
+    try {
+      chrome.runtime.sendMessage({ type: 'SET_PAUSED', payload: { paused: isPaused } });
+    } catch { /* silent */ }
+  });
+
+  settingsBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = $('settings-dropdown');
+    dropdown?.classList.toggle('active');
+  });
+
+  document.addEventListener('click', () => {
+    $('settings-dropdown')?.classList.remove('active');
+  });
+
+  changeKeyBtn?.addEventListener('click', async () => {
+    await chrome.storage.local.remove('apiKey');
+    window.location.reload();
+  });
+
+  clearSessionBtn?.addEventListener('click', async () => {
+    await clearSession();
+    $('settings-dropdown')?.classList.remove('active');
+    void render();
+  });
+
+  prevBtn?.addEventListener('click', () => {
+    if (identityIndex > 0) {
+      identityIndex--;
+      renderCurrentIdentity();
+      void fetchInbox();
+    }
+  });
+
+  nextBtn?.addEventListener('click', () => {
+    if (identityIndex < identityEntries.length - 1) {
+      identityIndex++;
+      renderCurrentIdentity();
+      void fetchInbox();
     }
   });
 
@@ -507,7 +593,6 @@ function attachHandlers(): void {
     await setAutoVerify(next);
   });
 
-  // Live updates — if worker creates/updates a session while popup is open.
   if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
     chrome.storage.onChanged.addListener((changes) => {
       if (changes.currentSession) {
@@ -516,7 +601,6 @@ function attachHandlers(): void {
     });
   }
 
-  // Inbox push from worker (OTP/link found).
   if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
     chrome.runtime.onMessage.addListener((message) => {
       if (message.type === 'OTP_FOUND' || message.type === 'LINK_FOUND') {
@@ -525,7 +609,6 @@ function attachHandlers(): void {
     });
   }
 
-  // Auto-refresh inbox every 10 seconds while the popup is kept open
   setInterval(() => {
     if (currentAddress && !isFetching) {
       void fetchInbox();
