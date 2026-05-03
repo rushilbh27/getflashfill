@@ -28,6 +28,7 @@ export interface HistoryEntry {
   date: string;
   otp?: string;
   verificationLink?: string;
+  identity?: Identity;
 }
 
 export interface StorageSchema {

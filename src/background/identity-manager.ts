@@ -82,6 +82,7 @@ export async function handleRequestIdentity(url: string, tabId: number): Promise
       email,
       url,
       date: new Date().toISOString(),
+      identity,
     });
 
     await sendToTab(tabId, { type: 'IDENTITY_READY', payload: { identity } });

@@ -813,35 +813,32 @@ export function showToast(message: string, duration: number = TOAST_DEFAULT_MS):
   const container = ensureToastContainer();
   const toast = document.createElement('div');
   
-  // Premium, state-of-the-art glassmorphism design
   Object.assign(toast.style, {
-    background: 'rgba(18, 18, 18, 0.8)',
-    backdropFilter: 'blur(12px) saturate(180%)',
-    // @ts-expect-error vendor prefix not in CSSStyleDeclaration type
-    WebkitBackdropFilter: 'blur(12px) saturate(180%)',
-    color: '#ffffff',
-    padding: '12px 18px',
-    borderRadius: '12px',
-    fontFamily: '"Outfit", "Inter", -apple-system, sans-serif',
-    fontSize: '14px',
-    fontWeight: '500',
-    lineHeight: '1.5',
-    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.1)',
+    background: '#000000',
+    color: '#eaff00',
+    padding: '10px 14px',
+    borderRadius: '0px',
+    fontFamily: '"Space Grotesk", "Inter", -apple-system, sans-serif',
+    fontSize: '13px',
+    fontWeight: '700',
+    lineHeight: '1.4',
+    textTransform: 'uppercase',
+    letterSpacing: '0.03em',
+    border: '2.5px solid #000000',
+    boxShadow: '4px 4px 0px #000000',
     opacity: '0',
     display: 'flex',
     alignItems: 'center',
-    gap: '10px',
-    transform: 'translateY(-10px) scale(0.95)',
-    transition: `all ${TOAST_ANIMATE_MS}ms cubic-bezier(0.23, 1, 0.32, 1)`,
+    gap: '8px',
+    transform: 'translateY(-8px)',
+    transition: `all ${TOAST_ANIMATE_MS}ms ease`,
     pointerEvents: 'auto',
-    maxWidth: '320px',
+    maxWidth: '300px',
     wordBreak: 'break-word',
-    borderLeft: '4px solid #3d5afe', // Vibrant Indigo accent
   } satisfies Partial<CSSStyleDeclaration>);
 
-  // Content with icon-like hint
   toast.innerHTML = `
-    <div style="flex-shrink:0; width:8px; height:8px; background:#3d5afe; border-radius:50%; box-shadow:0 0 8px #3d5afe"></div>
+    <div style="flex-shrink:0; width:8px; height:8px; background:#eaff00; border:1.5px solid #eaff00"></div>
     <span>${message}</span>
   `;
 

@@ -117,7 +117,14 @@ async function buildIdentityEntries(): Promise<void> {
 
   for (const h of history) {
     if (!identityEntries.find(e => e.email === h.email)) {
-      identityEntries.push({ email: h.email });
+      identityEntries.push({
+        email: h.email,
+        password: h.identity?.password,
+        firstName: h.identity?.firstName,
+        lastName: h.identity?.lastName,
+        username: h.identity?.username,
+        phone: h.identity?.phone,
+      });
     }
   }
 
