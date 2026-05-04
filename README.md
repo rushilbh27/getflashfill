@@ -117,12 +117,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
 ---
 
-## Contributors
-
-See [CONTRIBUTORS.md](./CONTRIBUTORS.md).
-
----
-
 ## License
 
 MIT — see [LICENSE](./LICENSE).
